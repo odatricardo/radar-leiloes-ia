@@ -21,6 +21,14 @@ client = genai.Client(api_key=settings.gemini_api_key)
 
 VINHEDO_LAT = -23.0297
 VINHEDO_LON = -46.9753
+NON_RETRY_STATUS_CODES = (
+    "400",
+    "403",
+    "404",
+    "INVALID_ARGUMENT",
+    "PERMISSION_DENIED",
+    "NOT_FOUND",
+)
 TRANSIENT_MARKERS = (
     "503",
     "UNAVAILABLE",
@@ -62,7 +70,10 @@ async def _gerar_com_retry(
             except Exception as exc:
                 ultimo_erro = exc
                 msg = str(exc)
-                eh_transitorio = any(marcador in msg for marcador in TRANSIENT_MARKERS)
+                eh_erro_fixo = any(cod in msg for cod in NON_RETRY_STATUS_CODES)
+                eh_transitorio = (not eh_erro_fixo) and any(
+                    marcador in msg for marcador in TRANSIENT_MARKERS
+                )
                 if not eh_transitorio or tentativa == max_tentativas - 1:
                     break
                 espera = (2 * (tentativa + 1)) + random.uniform(0.2, 1.0)
