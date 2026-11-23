@@ -1,5 +1,6 @@
 import asyncio
 import math
+import random
 import httpx
 from google import genai
 from google.genai import types
@@ -43,7 +44,7 @@ async def _gerar_com_retry(
     config: types.GenerateContentConfig,
     modelo_principal: str,
     modelo_fallback: str | None = None,
-    max_tentativas: int = 4,
+    max_tentativas: int = 5,
 ):
     modelos = [modelo_principal]
     if modelo_fallback and modelo_fallback != modelo_principal:
@@ -64,7 +65,8 @@ async def _gerar_com_retry(
                 eh_transitorio = any(marcador in msg for marcador in TRANSIENT_MARKERS)
                 if not eh_transitorio or tentativa == max_tentativas - 1:
                     break
-                await asyncio.sleep(2**tentativa)
+                espera = (2 * (tentativa + 1)) + random.uniform(0.2, 1.0)
+                await asyncio.sleep(espera)
 
     assert ultimo_erro is not None
     raise ultimo_erro
