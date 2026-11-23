@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from app.agents import (
     agente_2_triagem,
@@ -8,15 +9,27 @@ from app.agents import (
 )
 from app.config import settings
 from app.db import listar_oportunidades, salvar_lote_avaliado
-from app.models import CuradoriaFinal, LoteEntrada, ProcessamentoLoteResponse
+from app.models import CuradoriaFinal, LoteEntrada
 
 app = FastAPI(title="Motor Multiagente de Leilões - Recuperados de Financiamento", version="1.2.0")
 
 
-async def avaliar_lote_detalhado(lote: LoteEntrada) -> ProcessamentoLoteResponse:
+class ResultadoAvaliacao:
+    def __init__(
+        self,
+        aprovado: bool,
+        curadoria: CuradoriaFinal | None = None,
+        motivo_rejeicao: str | None = None,
+    ):
+        self.aprovado = aprovado
+        self.curadoria = curadoria
+        self.motivo_rejeicao = motivo_rejeicao
+
+
+async def avaliar_lote_detalhado(lote: LoteEntrada) -> ResultadoAvaliacao:
     distancia_km = await resolver_distancia_km(lote)
     if distancia_km > settings.raio_maximo_km:
-        return ProcessamentoLoteResponse(
+        return ResultadoAvaliacao(
             aprovado=False,
             motivo_rejeicao=(
                 f"Distância estimada de {distancia_km:.1f} km até {settings.base_cidade}/{settings.base_uf} "
@@ -26,8 +39,11 @@ async def avaliar_lote_detalhado(lote: LoteEntrada) -> ProcessamentoLoteResponse
 
     triagem = await agente_2_triagem(lote, distancia_km)
     if not triagem.aprovado_triagem or not triagem.categoria:
-        motivo = triagem.motivo_descarte or "Categoria fora do escopo ou origem não confirmada como alienação fiduciária."
-        return ProcessamentoLoteResponse(
+        motivo = (
+            triagem.motivo_descarte
+            or "Categoria fora do escopo ou origem não confirmada como alienação fiduciária."
+        )
+        return ResultadoAvaliacao(
             aprovado=False,
             motivo_rejeicao=f"Reprovado na Triagem: {motivo}",
         )
@@ -35,7 +51,7 @@ async def avaliar_lote_detalhado(lote: LoteEntrada) -> ProcessamentoLoteResponse
     auditoria = await agente_3_auditor_edital(lote, triagem.categoria)
     resultado = await agente_4_e_5_curador(lote, triagem, auditoria, distancia_km)
     await asyncio.to_thread(salvar_lote_avaliado, lote, resultado)
-    return ProcessamentoLoteResponse(aprovado=True, curadoria=resultado)
+    return ResultadoAvaliacao(aprovado=True, curadoria=resultado)
 
 
 async def processar_lote(lote: LoteEntrada) -> CuradoriaFinal | None:
@@ -43,22 +59,29 @@ async def processar_lote(lote: LoteEntrada) -> CuradoriaFinal | None:
     return resposta.curadoria
 
 
-@app.post("/api/v1/lotes/avaliar", response_model=ProcessamentoLoteResponse)
-async def avaliar_lote_endpoint(lote: LoteEntrada):
+@app.post("/api/v1/lotes/avaliar")
+async def avaliar_lote_endpoint(lote: LoteEntrada) -> dict[str, Any]:
     try:
-        return await avaliar_lote_detalhado(lote)
+        resp = await avaliar_lote_detalhado(lote)
+        return {
+            "aprovado": resp.aprovado,
+            "motivo_rejeicao": resp.motivo_rejeicao,
+            "curadoria": resp.curadoria.model_dump() if resp.curadoria else None,
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/v1/lotes/lote-batch")
-async def avaliar_lotes_em_paralelo(lotes: list[LoteEntrada]):
+async def avaliar_lotes_em_paralelo(lotes: list[LoteEntrada]) -> dict[str, Any]:
     resultados = await asyncio.gather(*(avaliar_lote_detalhado(l) for l in lotes), return_exceptions=True)
-    aprovados = [r.curadoria for r in resultados if isinstance(r, ProcessamentoLoteResponse) and r.aprovado and r.curadoria]
+    aprovados = [
+        r.curadoria for r in resultados if isinstance(r, ResultadoAvaliacao) and r.aprovado and r.curadoria
+    ]
     descartados = [
         r.motivo_rejeicao
         for r in resultados
-        if isinstance(r, ProcessamentoLoteResponse) and not r.aprovado
+        if isinstance(r, ResultadoAvaliacao) and not r.aprovado
     ]
     erros = [str(r) for r in resultados if isinstance(r, Exception)]
     return {
