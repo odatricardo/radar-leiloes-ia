@@ -1,7 +1,9 @@
-import json
+import asyncio
+import math
 import httpx
 from google import genai
 from google.genai import types
+from pydantic import BaseModel, Field
 from app.config import settings
 from app.finance import MARGEM_DIAMANTE_PCT, calcular_viabilidade, obter_margem_minima
 from app.models import (
@@ -16,31 +18,118 @@ from app.pdf_reader import extrair_texto_pdf_url
 
 client = genai.Client(api_key=settings.gemini_api_key)
 
+VINHEDO_LAT = -23.0297
+VINHEDO_LON = -46.9753
+TRANSIENT_MARKERS = (
+    "503",
+    "UNAVAILABLE",
+    "429",
+    "RESOURCE_EXHAUSTED",
+    "DEADLINE_EXCEEDED",
+    "500",
+    "502",
+    "504",
+)
+
+
+class ResumoCuradoriaSchema(BaseModel):
+    score_qualidade: int = Field(..., ge=0, le=100)
+    resumo_executivo: str
+    acao_recomendada: str
+
+
+async def _gerar_com_retry(
+    contents: str,
+    config: types.GenerateContentConfig,
+    modelo_principal: str,
+    modelo_fallback: str | None = None,
+    max_tentativas: int = 4,
+):
+    modelos = [modelo_principal]
+    if modelo_fallback and modelo_fallback != modelo_principal:
+        modelos.append(modelo_fallback)
+
+    ultimo_erro: Exception | None = None
+    for modelo in modelos:
+        for tentativa in range(max_tentativas):
+            try:
+                return await client.aio.models.generate_content(
+                    model=modelo,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:
+                ultimo_erro = exc
+                msg = str(exc)
+                eh_transitorio = any(marcador in msg for marcador in TRANSIENT_MARKERS)
+                if not eh_transitorio or tentativa == max_tentativas - 1:
+                    break
+                await asyncio.sleep(2**tentativa)
+
+    assert ultimo_erro is not None
+    raise ultimo_erro
+
+
+def _haversine_rodoviario_estimado(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    raio_terra_km = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    distancia_reta = 2 * raio_terra_km * math.asin(math.sqrt(a))
+    return round(distancia_reta * 1.25, 1)
+
 
 async def resolver_distancia_km(lote: LoteEntrada) -> float:
     if lote.distancia_vinhedo_km is not None:
         return lote.distancia_vinhedo_km
 
-    if settings.google_maps_api_key:
-        origem = f"{settings.base_cidade}, {settings.base_uf}, Brasil"
-        destino = f"{lote.cidade}, {lote.uf}, Brasil"
-        url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-        params = {
-            "origins": origem,
-            "destinations": destino,
-            "key": settings.google_maps_api_key,
-            "language": "pt-BR",
-        }
-        async with httpx.AsyncClient(timeout=10.0) as http:
-            resp = await http.get(url, params=params)
-            data = resp.json()
+    cidade_norm = lote.cidade.strip().lower()
+    uf_norm = lote.uf.strip().upper()
+    if cidade_norm == "vinhedo" and uf_norm == "SP":
+        return 10.0
+
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        if settings.google_maps_api_key:
+            origem = f"{settings.base_cidade}, {settings.base_uf}, Brasil"
+            destino = f"{lote.cidade}, {uf_norm}, Brasil"
+            url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+            params = {
+                "origins": origem,
+                "destinations": destino,
+                "key": settings.google_maps_api_key,
+                "language": "pt-BR",
+            }
             try:
+                resp = await http.get(url, params=params)
+                data = resp.json()
                 metros = data["rows"][0]["elements"][0]["distance"]["value"]
-                return metros / 1000.0
-            except (KeyError, IndexError):
+                return round(metros / 1000.0, 1)
+            except Exception:
                 pass
 
-    return 120.0 if lote.uf.upper() == "SP" else 380.0
+        try:
+            nom_url = "https://nominatim.openstreetmap.org/search"
+            nom_params = {
+                "city": lote.cidade,
+                "state": uf_norm,
+                "country": "Brazil",
+                "format": "json",
+                "limit": 1,
+            }
+            headers = {"User-Agent": "RadarLeiloesIA/1.2"}
+            nom_resp = await http.get(nom_url, params=nom_params, headers=headers)
+            resultados = nom_resp.json()
+            if resultados:
+                lat = float(resultados[0]["lat"])
+                lon = float(resultados[0]["lon"])
+                return _haversine_rodoviario_estimado(VINHEDO_LAT, VINHEDO_LON, lat, lon)
+        except Exception:
+            pass
+
+    return 250.0 if uf_norm == "SP" else 650.0
 
 
 async def preparar_texto_edital(lote: LoteEntrada) -> str:
@@ -59,6 +148,7 @@ Você é um especialista sênior em leilões brasileiros. Avalie se o lote atend
 - Categorias permitidas: caminhonete_4x4, caminhao, maquina_agricola, imovel.
 - Origem obrigatória: RECUPERADO DE FINANCIAMENTO / ALIENAÇÃO FIDUCIÁRIA (retomada bancária, financeira ou banco de montadora).
 - Rejeite: leilões judiciais trabalhistas/fiscais, sucatas, carros 4x2 comuns, motos ou distância acima de {settings.raio_maximo_km} km.
+- Se rejeitar, preencha 'motivo_descarte' de forma clara e objetiva em 1 frase.
 
 Dados do lote:
 Leiloeiro: {lote.leiloeiro}
@@ -67,14 +157,15 @@ Título: {lote.titulo_lote}
 Descrição: {lote.descricao_lote}
 Cidade/UF: {lote.cidade}/{lote.uf}
 """
-    response = await client.aio.models.generate_content(
-        model=settings.gemini_model_fast,
+    response = await _gerar_com_retry(
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=TriagemResultado,
             temperature=0.1,
         ),
+        modelo_principal=settings.gemini_model_fast,
+        modelo_fallback=settings.gemini_model_audit,
     )
     return TriagemResultado.model_validate_json(response.text)
 
@@ -96,14 +187,15 @@ Extraia com rigor:
 4. Comissão do leiloeiro (%) e taxa administrativa/pátio (R$).
 5. Sinistro/avaria grave ou restrição documental/judicial e alertas críticos.
 """
-    response = await client.aio.models.generate_content(
-        model=settings.gemini_model_audit,
+    response = await _gerar_com_retry(
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=AuditoriaEditalResultado,
             temperature=0.1,
         ),
+        modelo_principal=settings.gemini_model_audit,
+        modelo_fallback=settings.gemini_model_fast,
     )
     return AuditoriaEditalResultado.model_validate_json(response.text)
 
@@ -124,12 +216,17 @@ async def agente_4_e_5_curador(
         else 0.0
     )
 
+    is_diamante = (
+        viabilidade.oportunidade_diamante
+        or viabilidade.margem_liquida_projetada_pct >= MARGEM_DIAMANTE_PCT
+    )
+
     bloqueio_grave = (
         not auditoria.recuperado_financiamento_confirmado
         or auditoria.sinistro_ou_avaria_grave
         or auditoria.restricao_documental_ou_judicial
         or divida_pct_mercado > 8.0
-        or viabilidade.margem_liquida_projetada_pct < margem_meta
+        or (not is_diamante and viabilidade.margem_liquida_projetada_pct < margem_meta)
     )
 
     posse_ok = auditoria.posse_ou_chave in ("com_chave", "desocupado")
@@ -138,12 +235,18 @@ async def agente_4_e_5_curador(
     if bloqueio_grave:
         semaforo: SemaforoStatus = "VERMELHO"
         nivel: NivelOportunidade = "DESCARTADO"
+    elif is_diamante and posse_ok and debitos_ok:
+        semaforo = "VERDE"
+        nivel = "DIAMANTE"
+    elif is_diamante:
+        semaforo = "AMARELO"
+        nivel = "DIAMANTE"
     elif viabilidade.margem_liquida_projetada_pct >= margem_meta and posse_ok:
         semaforo = "VERDE"
-        nivel = "DIAMANTE" if (viabilidade.oportunidade_diamante and debitos_ok) else "PADRAO"
+        nivel = "PADRAO"
     else:
         semaforo = "AMARELO"
-        nivel = "DIAMANTE" if viabilidade.oportunidade_diamante else "ATENCAO"
+        nivel = "ATENCAO"
 
     prompt = f"""
 Você é um gestor de ativos em {settings.base_cidade}/{settings.base_uf}.
@@ -159,36 +262,31 @@ Lucro líquido estimado: R$ {viabilidade.lucro_liquido_estimado:,.2f}
 Posse/Chave: {auditoria.posse_ou_chave} | Débitos: {auditoria.responsavel_debitos_anteriores}
 Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
 """
-    resumo_resp = await client.aio.models.generate_content(
-        model=settings.gemini_model_fast,
+    resumo_resp = await _gerar_com_retry(
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_schema={
-                "type": "OBJECT",
-                "properties": {
-                    "score_qualidade": {"type": "INTEGER"},
-                    "resumo_executivo": {"type": "STRING"},
-                    "acao_recomendada": {"type": "STRING"},
-                },
-                "required": ["score_qualidade", "resumo_executivo", "acao_recomendada"],
-            },
+            response_schema=ResumoCuradoriaSchema,
             temperature=0.2,
         ),
+        modelo_principal=settings.gemini_model_fast,
+        modelo_fallback=settings.gemini_model_audit,
     )
-    dados_curadoria = json.loads(resumo_resp.text)
+    dados_curadoria = ResumoCuradoriaSchema.model_validate_json(resumo_resp.text)
 
-    score_base = max(0, min(100, int(dados_curadoria["score_qualidade"])))
+    score_base = dados_curadoria.score_qualidade
     if nivel == "DIAMANTE":
         score_base = max(score_base, 90)
+    elif semaforo == "VERMELHO":
+        score_base = min(score_base, 35)
 
     return CuradoriaFinal(
         lote_id=lote.gerar_lote_id(),
         semaforo=semaforo,
         nivel_oportunidade=nivel,
         score_qualidade=score_base,
-        resumo_executivo=dados_curadoria["resumo_executivo"],
-        acao_recomendada=dados_curadoria["acao_recomendada"],
+        resumo_executivo=dados_curadoria.resumo_executivo,
+        acao_recomendada=dados_curadoria.acao_recomendada,
         triagem=triagem,
         auditoria=auditoria,
         viabilidade=viabilidade,
