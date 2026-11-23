@@ -18,7 +18,8 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+    .block-container { padding-top: 3.5rem; padding-bottom: 2rem; }
+    [data-testid="stHeader"] { visibility: visible; }
     div[data-testid="stMetric"] {
         background-color: #111827;
         border: 1px solid #1F2937;
@@ -29,7 +30,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
 
 def formatar_brl(valor: float) -> str:
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -297,4 +297,5 @@ with tab_simulador:
         template="plotly_dark",
         height=400,
     )
+
     st.plotly_chart(fig_waterfall, use_container_width=True)
