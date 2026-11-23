@@ -1,0 +1,40 @@
+name: Radar Leiloes IA - Coleta e Auditoria Automatica
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  varrer-e-auditar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Baixar codigo do repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install playwright
+
+      - name: Instalar navegador Chromium para o Scraper
+        run: playwright install --with-deps chromium
+
+      - name: Executar Coleta + Agentes de IA + Gravar no Supabase
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SCRAPER_TARGET_URL: ${{ secrets.SCRAPER_TARGET_URL }}
+          SCRAPER_AUCTIONEER: ${{ secrets.SCRAPER_AUCTIONEER }}
+          SCRAPER_CREDITOR: ${{ secrets.SCRAPER_CREDITOR }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: python -m app.runner_automatico
