@@ -18,21 +18,40 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 3.5rem; padding-bottom: 2rem; }
-    [data-testid="stHeader"] { visibility: visible; }
+    header[data-testid="stHeader"] {
+        background: transparent;
+    }
+    .block-container {
+        padding-top: 4rem;
+        padding-bottom: 2.5rem;
+    }
     div[data-testid="stMetric"] {
         background-color: #111827;
         border: 1px solid #1F2937;
         padding: 14px 18px;
         border-radius: 12px;
     }
+    button[data-baseweb="tab"] {
+        padding-top: 8px;
+        padding-bottom: 8px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
+
 def formatar_brl(valor: float) -> str:
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    valor_seguro = float(valor or 0.0)
+    return f"R$ {valor_seguro:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+CATEGORIAS_LABELS = {
+    "caminhonete_4x4": "🛻 Caminhonete 4x4",
+    "caminhao": "🚛 Caminhão",
+    "maquina_agricola": "🚜 Máquina Agrícola",
+    "imovel": "🏢 Imóvel",
+}
 
 
 with st.sidebar:
@@ -53,14 +72,9 @@ with st.sidebar:
     )
     filtro_categorias = st.multiselect(
         "Classes de Ativos",
-        options=["caminhonete_4x4", "caminhao", "maquina_agricola", "imovel"],
-        default=["caminhonete_4x4", "caminhao", "maquina_agricola", "imovel"],
-        format_func=lambda x: {
-            "caminhonete_4x4": "🛻 Caminhonete 4x4",
-            "caminhao": "🚛 Caminhão",
-            "maquina_agricola": "🚜 Máquina Agrícola",
-            "imovel": "🏢 Imóvel",
-        }[x],
+        options=list(CATEGORIAS_LABELS.keys()),
+        default=list(CATEGORIAS_LABELS.keys()),
+        format_func=lambda x: CATEGORIAS_LABELS.get(x, str(x)),
     )
     raio_max = st.slider("Distância máxima de Vinhedo (km)", min_value=50, max_value=500, value=500, step=25)
     roi_min_filtro = st.slider("Margem líquida mínima exibida (%)", min_value=15, max_value=60, value=20, step=1)
@@ -87,6 +101,8 @@ with tab_dash:
         st.info("Nenhum lote cadastrado ainda. Use a aba **'Analisar Novo Lote / Edital'** para avaliar o primeiro lote com 1 clique.")
     else:
         df = pd.DataFrame(registros)
+        col_contagem = "lote_id" if "lote_id" in df.columns else df.columns[0]
+
         df_filtrado = df[
             (df["semaforo"].isin(filtro_semaforo))
             & (df["nivel_oportunidade"].isin(filtro_nivel))
@@ -98,9 +114,11 @@ with tab_dash:
         c1, c2, c3, c4 = st.columns(4)
         total_lotes = len(df_filtrado)
         total_diamantes = int((df_filtrado["nivel_oportunidade"] == "DIAMANTE").sum())
-        roi_medio = df_filtrado["margem_liquida_projetada_pct"].mean() if total_lotes else 0.0
+        roi_medio = float(df_filtrado["margem_liquida_projetada_pct"].mean()) if total_lotes else 0.0
         lucro_potencial_top5 = (
-            df_filtrado.nlargest(5, "lucro_liquido_estimado")["lucro_liquido_estimado"].sum() if total_lotes else 0.0
+            float(df_filtrado.nlargest(5, "lucro_liquido_estimado")["lucro_liquido_estimado"].sum())
+            if total_lotes
+            else 0.0
         )
 
         c1.metric("Oportunidades Filtradas", f"{total_lotes} lotes")
@@ -147,17 +165,20 @@ with tab_dash:
                     .agg(
                         roi_medio=("margem_liquida_projetada_pct", "mean"),
                         lucro_medio=("lucro_liquido_estimado", "mean"),
-                        qtd=("lote_id", "count"),
+                        qtd=(col_contagem, "count"),
                     )
+                )
+                resumo_cat["categoria_label"] = resumo_cat["categoria"].map(
+                    lambda x: CATEGORIAS_LABELS.get(x, str(x))
                 )
                 fig_bar = px.bar(
                     resumo_cat,
-                    x="categoria",
+                    x="categoria_label",
                     y="roi_medio",
                     text=resumo_cat["roi_medio"].apply(lambda v: f"{v:.1f}%"),
-                    color="categoria",
+                    color="categoria_label",
                     title="ROI Líquido Médio por Classe de Ativo (%)",
-                    labels={"categoria": "Classe de Ativo", "roi_medio": "ROI Líquido Médio (%)"},
+                    labels={"categoria_label": "Classe de Ativo", "roi_medio": "ROI Líquido Médio (%)"},
                 )
                 fig_bar.update_layout(template="plotly_dark", showlegend=False, height=390)
                 st.plotly_chart(fig_bar, use_container_width=True)
@@ -259,7 +280,9 @@ with tab_avaliar:
             if resultado is None:
                 st.warning("Lote descartado automaticamente na triagem (fora do raio de 500 km, classe fora do escopo ou não é recuperado de financiamento).")
             else:
-                cor_banner = {"VERDE": "success", "AMARELO": "warning", "VERMELHO": "error"}[resultado.semaforo]
+                cor_banner = {"VERDE": "success", "AMARELO": "warning", "VERMELHO": "error"}.get(
+                    resultado.semaforo, "info"
+                )
                 getattr(st, cor_banner)(
                     f"**Resultado: {resultado.semaforo} | Nível {resultado.nivel_oportunidade} (Score {resultado.score_qualidade}/100)**\n\n"
                     f"{resultado.resumo_executivo}\n\n**Ação:** {resultado.acao_recomendada}"
