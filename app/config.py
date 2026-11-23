@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     gemini_api_key: str
-    gemini_model_fast: str = "gemini-2.5-flash"
-    gemini_model_audit: str = "gemini-2.5-pro"
+    gemini_model_fast: str = "gemini-3.8-flash"
+    gemini_model_audit: str = "gemini-3.8-flash"
 
     database_url: str
     google_maps_api_key: str | None = None
