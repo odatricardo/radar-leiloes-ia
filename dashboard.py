@@ -1,11 +1,12 @@
 import asyncio
+import time
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 from app.db import listar_oportunidades
-from app.main import processar_lote
+from app.main import avaliar_lote_detalhado
 from app.models import LoteEntrada
 
 st.set_page_config(
@@ -80,7 +81,7 @@ with st.sidebar:
     roi_min_filtro = st.slider("Margem líquida mínima exibida (%)", min_value=15, max_value=60, value=20, step=1)
 
     st.divider()
-    if st.button("🔄 Atualizar Dados do Banco", use_container_width=True):
+    if st.button("🔄 Atualizar Dados do Banco", width="stretch"):
         st.rerun()
 
 
@@ -98,7 +99,9 @@ with tab_dash:
         registros = []
 
     if not registros:
-        st.info("Nenhum lote cadastrado ainda. Use a aba **'Analisar Novo Lote / Edital'** para avaliar o primeiro lote com 1 clique.")
+        st.info(
+            "Nenhum lote cadastrado ainda. Use a aba **'Analisar Novo Lote / Edital'** para avaliar o primeiro lote com 1 clique."
+        )
     else:
         df = pd.DataFrame(registros)
         col_contagem = "lote_id" if "lote_id" in df.columns else df.columns[0]
@@ -141,7 +144,12 @@ with tab_dash:
                     size="lucro_liquido_estimado",
                     color="nivel_oportunidade",
                     hover_name="titulo",
-                    hover_data={"cidade": True, "uf": True, "lance_atual": ":,.2f", "lance_maximo_recomendado": ":,.2f"},
+                    hover_data={
+                        "cidade": True,
+                        "uf": True,
+                        "lance_atual": ":,.2f",
+                        "lance_maximo_recomendado": ":,.2f",
+                    },
                     color_discrete_map={
                         "DIAMANTE": "#38BDF8",
                         "PADRAO": "#22C55E",
@@ -155,18 +163,17 @@ with tab_dash:
                         "nivel_oportunidade": "Classificação",
                     },
                 )
-                fig_scatter.add_hline(y=35, line_dash="dash", line_color="#38BDF8", annotation_text="Linha Diamante (35%)")
+                fig_scatter.add_hline(
+                    y=35, line_dash="dash", line_color="#38BDF8", annotation_text="Linha Diamante (35%)"
+                )
                 fig_scatter.update_layout(template="plotly_dark", height=390)
-                st.plotly_chart(fig_scatter, use_container_width=True)
+                st.plotly_chart(fig_scatter, width="stretch")
 
             with g2:
-                resumo_cat = (
-                    df_filtrado.groupby("categoria", as_index=False)
-                    .agg(
-                        roi_medio=("margem_liquida_projetada_pct", "mean"),
-                        lucro_medio=("lucro_liquido_estimado", "mean"),
-                        qtd=(col_contagem, "count"),
-                    )
+                resumo_cat = df_filtrado.groupby("categoria", as_index=False).agg(
+                    roi_medio=("margem_liquida_projetada_pct", "mean"),
+                    lucro_medio=("lucro_liquido_estimado", "mean"),
+                    qtd=(col_contagem, "count"),
                 )
                 resumo_cat["categoria_label"] = resumo_cat["categoria"].map(
                     lambda x: CATEGORIAS_LABELS.get(x, str(x))
@@ -181,7 +188,7 @@ with tab_dash:
                     labels={"categoria_label": "Classe de Ativo", "roi_medio": "ROI Líquido Médio (%)"},
                 )
                 fig_bar.update_layout(template="plotly_dark", showlegend=False, height=390)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width="stretch")
 
             st.subheader("Ranking de Lotes Aprovados (Ordenado por Prioridade e Score)")
             df_exibir = df_filtrado[
@@ -221,7 +228,7 @@ with tab_dash:
             )
             st.dataframe(
                 df_exibir,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "Link": st.column_config.LinkColumn("Abrir Lote"),
@@ -244,23 +251,30 @@ with tab_avaliar:
         comitente = col2.text_input("Banco / Financeira Credora", placeholder="Ex: Banco Bradesco / Banco John Deere")
         numero_lote = col3.text_input("Número do Lote", placeholder="Ex: 042")
 
-        titulo_lote = st.text_input("Título do Lote", placeholder="Ex: Toyota Hilux SRX 4x4 2022/2023 Retomada Financiamento")
+        titulo_lote = st.text_input(
+            "Título do Lote", placeholder="Ex: Toyota Hilux SRX 4x4 2022/2023 Retomada Financiamento"
+        )
         col_c1, col_c2, col_c3, col_c4 = st.columns(4)
         cidade = col_c1.text_input("Cidade do Pátio/Imóvel", placeholder="Ex: Ribeirão Preto")
         uf = col_c2.text_input("UF", value="SP", max_chars=2)
         lance_atual = col_c3.number_input("Lance Atual / Mínimo (R$)", min_value=1000.0, value=145000.0, step=1000.0)
-        valor_mercado = col_c4.number_input("Valor de Revenda Conservador (R$)", min_value=1000.0, value=220000.0, step=1000.0)
+        valor_mercado = col_c4.number_input(
+            "Valor de Revenda Conservador (R$)", min_value=1000.0, value=220000.0, step=1000.0
+        )
 
         url_lote = st.text_input("URL da Página do Lote", placeholder="https://...")
-        url_edital_pdf = st.text_input("URL Direta do PDF do Edital (Opcional - leitura automática)", placeholder="https://.../edital.pdf")
+        url_edital_pdf = st.text_input(
+            "URL Direta do PDF do Edital (Opcional - leitura automática)", placeholder="https://.../edital.pdf"
+        )
         descricao_lote = st.text_area("Descrição do Lote / Observações do Edital", height=130)
 
-        enviado = st.form_submit_button("🚀 Auditar Lote com IA e Calcular Teto de Lance", use_container_width=True)
+        enviado = st.form_submit_button("🚀 Auditar Lote com IA e Calcular Teto de Lance", width="stretch")
 
     if enviado:
         if not leiloeiro or not comitente or not titulo_lote or not cidade:
             st.error("Preencha pelo menos Leiloeiro, Banco Credor, Título e Cidade.")
         else:
+            inicio = time.perf_counter()
             with st.spinner("Os agentes estão lendo o edital, calculando distância de Vinhedo/SP e auditando riscos..."):
                 lote_obj = LoteEntrada(
                     leiloeiro=leiloeiro,
@@ -275,16 +289,28 @@ with tab_avaliar:
                     lance_atual=lance_atual,
                     valor_mercado_referencia=valor_mercado,
                 )
-                resultado = asyncio.run(processar_lote(lote_obj))
+                try:
+                    resposta = asyncio.run(avaliar_lote_detalhado(lote_obj))
+                    erro_execucao = None
+                except Exception as exc:
+                    resposta = None
+                    erro_execucao = str(exc)
 
-            if resultado is None:
-                st.warning("Lote descartado automaticamente na triagem (fora do raio de 500 km, classe fora do escopo ou não é recuperado de financiamento).")
+            duracao = time.perf_counter() - inicio
+
+            if erro_execucao:
+                st.error(f"Falha na análise após {duracao:.1f}s: {erro_execucao}")
+            elif resposta is None or not resposta.aprovado or resposta.curadoria is None:
+                motivo = resposta.motivo_rejeicao if resposta else "Lote descartado automaticamente na triagem."
+                st.warning(f"{motivo} *(Tempo: {duracao:.1f}s)*")
             else:
+                resultado = resposta.curadoria
                 cor_banner = {"VERDE": "success", "AMARELO": "warning", "VERMELHO": "error"}.get(
                     resultado.semaforo, "info"
                 )
                 getattr(st, cor_banner)(
-                    f"**Resultado: {resultado.semaforo} | Nível {resultado.nivel_oportunidade} (Score {resultado.score_qualidade}/100)**\n\n"
+                    f"**Resultado: {resultado.semaforo} | Nível {resultado.nivel_oportunidade} "
+                    f"(Score {resultado.score_qualidade}/100) — {duracao:.1f}s**\n\n"
                     f"{resultado.resumo_executivo}\n\n**Ação:** {resultado.acao_recomendada}"
                 )
                 m1, m2, m3, m4 = st.columns(4)
@@ -293,13 +319,24 @@ with tab_avaliar:
                 m3.metric("Margem Líquida Real", f"{resultado.viabilidade.margem_liquida_projetada_pct:.1f}%")
                 m4.metric("Lucro Líquido Estimado", formatar_brl(resultado.viabilidade.lucro_liquido_estimado))
 
+                with st.expander("Detalhes Jurídicos e Operacionais da Auditoria"):
+                    st.write(f"**Modalidade:** {resultado.triagem.modalidade_identificada or 'Alienação Fiduciária'}")
+                    st.write(f"**Distância de Vinhedo/SP:** {resultado.viabilidade.distancia_vinhedo_km:.1f} km")
+                    st.write(f"**Posse / Chave:** {resultado.auditoria.posse_ou_chave}")
+                    st.write(f"**Responsável por Débitos:** {resultado.auditoria.responsavel_debitos_anteriores}")
+                    st.write(f"**Resumo das Cláusulas:** {resultado.auditoria.resumo_clausulas}")
+                    if resultado.auditoria.alertas_criticos:
+                        st.warning("Alertas: " + " | ".join(resultado.auditoria.alertas_criticos))
+
 
 with tab_simulador:
     st.subheader("Simulador Rápido de Viabilidade Antes do Pregão")
     s1, s2, s3 = st.columns(3)
     sim_revenda = s1.number_input("Preço de Revenda Conservador (R$)", min_value=10000.0, value=250000.0, step=5000.0)
     sim_lance = s2.number_input("Seu Lance Pretendido (R$)", min_value=5000.0, value=155000.0, step=2500.0)
-    sim_custos = s3.number_input("Custos Totais (Frete + Pátio + Doc + Contingência) (R$)", min_value=0.0, value=18500.0, step=500.0)
+    sim_custos = s3.number_input(
+        "Custos Totais (Frete + Pátio + Doc + Contingência) (R$)", min_value=0.0, value=18500.0, step=500.0
+    )
 
     comissao = sim_lance * 0.05
     custo_total = sim_lance + comissao + sim_custos
@@ -321,4 +358,4 @@ with tab_simulador:
         height=400,
     )
 
-    st.plotly_chart(fig_waterfall, use_container_width=True)
+    st.plotly_chart(fig_waterfall, width="stretch")
