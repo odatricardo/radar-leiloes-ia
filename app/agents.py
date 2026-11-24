@@ -242,7 +242,7 @@ async def _chamar_provedor_secundario_json(
                 f"{schema_json}"
             ),
         },
-        {"role": "user", "content": prompt},
+        {"role": "user", content": prompt},
     ]
 
     modelos_tentativa: list[str] = []
@@ -699,11 +699,14 @@ async def agente_4_e_5_curador(
         or viabilidade.margem_liquida_projetada_pct >= MARGEM_DIAMANTE_PCT
     )
 
+    # Só bloqueia em VERMELHO/DESCARTADO quando há bloqueio real ou margem abaixo do patamar mínimo
+    # sem atingir o patamar Diamante. Margens positivas relevantes (>= 15%) mantêm o lote visível.
+    margem_aceitavel_visivel = max(min(margem_meta, 15.0), 10.0)
     bloqueio_grave = (
         auditoria.sinistro_ou_avaria_grave
         or auditoria.restricao_documental_ou_judicial
         or divida_pct_mercado > 8.0
-        or (not is_diamante and viabilidade.margem_liquida_projetada_pct < margem_meta)
+        or (not is_diamante and viabilidade.margem_liquida_projetada_pct < margem_aceitavel_visivel)
     )
 
     fiduciaria_ok = bool(auditoria.recuperado_financiamento_confirmado)
