@@ -82,6 +82,18 @@ PALAVRAS_BLOQUEIO = (
     "solda",
     "gerador",
     "motogerador",
+    "plataforma tesoura",
+    "plataforma elevatória",
+    "plataforma elevatoria",
+    "porta pallets",
+    "prateleiras",
+    "túnel de encolhimento",
+    "tunel de encolhimento",
+    "poliamida",
+    "instrumentos de percussão",
+    "instrumentos de percussao",
+    "cama elástica",
+    "cama elastica",
     "entrar ou abrir conta",
     "abrir conta",
     "ver todos os eventos",
@@ -214,6 +226,20 @@ def _normalizar_texto(texto: str | None) -> str:
     return " ".join(texto.lower().split())
 
 
+def _formatar_nome_cidade(bruto: str) -> str:
+    """Normaliza 'BARRETOS' ou 'são paulo' para 'Barretos' ou 'São Paulo'."""
+    limpo = " ".join(bruto.strip(" ,;-–/").split())
+    minusculas_conectivos = {"de", "da", "do", "das", "dos", "e"}
+    partes = limpo.lower().split(" ")
+    formatadas: list[str] = []
+    for idx, p in enumerate(partes):
+        if idx > 0 and p in minusculas_conectivos:
+            formatadas.append(p)
+        else:
+            formatadas.append(p.capitalize())
+    return " ".join(formatadas)
+
+
 def _parse_moeda_brl(bruto: str) -> float | None:
     limpo = bruto.replace("R$", "").replace("\xa0", " ").strip()
     if "," in limpo:
@@ -288,35 +314,37 @@ def _extrair_cidade_uf(
     texto: str, padrao_cidade: str = "Não informada", padrao_uf: str = "XX"
 ) -> tuple[str, str]:
     """
-    Extrai (cidade, uf) a partir de padrões comuns como 'Campinas/SP' ou 'Sorocaba - SP'.
+    Extrai (cidade, uf) a partir de padrões como 'Barretos-SP', 'Campinas/SP' ou 'Sorocaba - SP'.
     """
     janelas: list[str] = []
     for kw in (
+        "localização",
+        "localizacao",
         "avaliação",
         "lance mínimo",
         "depositário",
         "comarca",
-        "localização",
         "cidade",
         "endereço",
     ):
         for match in re.finditer(re.escape(kw), texto, flags=re.IGNORECASE):
-            inicio = max(0, match.start() - 120)
-            fim = min(len(texto), match.end() + 180)
+            inicio = max(0, match.start() - 80)
+            fim = min(len(texto), match.end() + 200)
             janelas.append(texto[inicio:fim])
-    janelas.append(texto[:4000])
+    janelas.append(texto[:4500])
 
     regex_loc = re.compile(
-        r"([A-ZÀ-Ú][A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*(?:/|-|–)\s*([A-Z]{2})\b"
+        r"(?:^|[\s:;(\[])([A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*(?:/|-|–)\s*([A-Za-z]{2})(?=$|[\s.,;)\]])",
+        flags=re.MULTILINE,
     )
 
     for trecho in janelas:
         for m in regex_loc.finditer(trecho):
-            cidade_cand = " ".join(m.group(1).strip(" ,;-–/").split())
+            cidade_bruta = m.group(1).strip(" ,;-–/([")
             uf_cand = m.group(2).strip().upper()
             if uf_cand not in UFS_BRASIL:
                 continue
-            baixa = cidade_cand.lower()
+            baixa = cidade_bruta.lower()
             if any(
                 ruido in baixa
                 for ruido in (
@@ -335,11 +363,14 @@ def _extrair_cidade_uf(
                     "maquinas",
                     "equipamentos",
                     "eventos",
+                    "localização",
+                    "localizacao",
                 )
             ):
                 continue
-            if len(cidade_cand) >= 3:
-                return cidade_cand[:80], uf_cand
+            cidade_fmt = _formatar_nome_cidade(cidade_bruta)
+            if len(cidade_fmt) >= 3:
+                return cidade_fmt[:80], uf_cand
 
     return padrao_cidade, padrao_uf
 
@@ -503,7 +534,13 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
                     item["titulo_lote"] = ln[:180]
                     break
 
-        cidade_real, uf_real = _extrair_cidade_uf(texto_pagina)
+        cidade_atual = item.get("cidade")
+        uf_atual = item.get("uf")
+        cidade_real, uf_real = _extrair_cidade_uf(
+            texto_pagina,
+            padrao_cidade=cidade_atual if cidade_atual and cidade_atual != "Não informada" else "Não informada",
+            padrao_uf=uf_atual if uf_atual and uf_atual != "XX" else "XX",
+        )
         item["cidade"] = cidade_real
         item["uf"] = uf_real
 
@@ -531,7 +568,7 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
 
 
 def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
-    """Filtro rápido sem LLM para poupar cota diária de IA."""
+    """Filtro rápido sem LLM para poupar cota diária de IA e evitar chamadas ao geocoder."""
     titulo = _normalizar_texto(bruto.get("titulo_lote"))
     descricao = _normalizar_texto(bruto.get("descricao_lote"))
     comitente = _normalizar_texto(bruto.get("comitente_credor"))
@@ -541,7 +578,8 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
     if _titulo_parece_generico(bruto.get("titulo_lote", "")):
         return False, "Título genérico ou de navegação/login/categoria."
 
-    if not titulo or not bruto.get("cidade") or bruto.get("cidade") == "Não informada":
+    cidade = (bruto.get("cidade") or "").strip()
+    if not titulo or not cidade or cidade.lower() in {"não informada", "nao informada"}:
         return False, "Dados mínimos ausentes (título ou localização)."
 
     for termo in PALAVRAS_BLOQUEIO:
