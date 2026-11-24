@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import math
 import random
 from typing import TypeVar
@@ -23,6 +24,7 @@ from app.pdf_reader import extrair_texto_pdf_url
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
+logger = logging.getLogger("radar_agents")
 client = genai.Client(api_key=settings.gemini_api_key)
 
 VINHEDO_LAT = -23.0297
@@ -45,6 +47,8 @@ TRANSIENT_MARKERS = (
     "502",
     "504",
 )
+
+ultima_fonte_ia: str = "nao_executado"
 
 
 class ResumoCuradoriaSchema(BaseModel):
@@ -84,8 +88,9 @@ async def _chamar_provedor_secundario_json(
     prompt: str,
     schema_cls: type[SchemaT],
 ) -> SchemaT | None:
-    """Fallback opcional para provedor OpenAI-compatible quando o Gemini retorna 503/429."""
+    """Consulta provedor OpenAI-compatible quando o Gemini falha por indisponibilidade/cota."""
     if not settings.openai_api_key:
+        logger.info("Provedor secundário não configurado (OPENAI_API_KEY ausente).")
         return None
 
     base_url = (settings.openai_base_url or "https://api.openai.com/v1").rstrip("/")
@@ -100,7 +105,9 @@ async def _chamar_provedor_secundario_json(
             {
                 "role": "system",
                 "content": (
-                    "Responda exclusivamente com um objeto JSON válido aderente ao schema a seguir:\n"
+                    "Você é um assistente técnico preciso. Responda exclusivamente com um "
+                    "objeto JSON válido aderente ao schema a seguir, respeitando exatamente os "
+                    "nomes e tipos dos campos:\n"
                     f"{schema_json}"
                 ),
             },
@@ -112,14 +119,18 @@ async def _chamar_provedor_secundario_json(
         "Content-Type": "application/json",
     }
 
+    logger.info("Acionando provedor secundário (%s) em %s...", settings.openai_model, base_url)
     try:
-        async with httpx.AsyncClient(timeout=20.0) as http:
+        async with httpx.AsyncClient(timeout=25.0) as http:
             resp = await http.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             conteudo = data["choices"][0]["message"]["content"]
-            return schema_cls.model_validate_json(conteudo)
-    except Exception:
+            resultado = schema_cls.model_validate_json(conteudo)
+            logger.info("Provedor secundário (%s) respondeu com sucesso.", settings.openai_model)
+            return resultado
+    except Exception as exc:
+        logger.warning("Falha no provedor secundário (%s): %s", settings.openai_model, exc)
         return None
 
 
@@ -131,11 +142,8 @@ async def _gerar_estruturado_resiliente(
     temperature: float = 0.1,
     max_tentativas: int = 2,
 ) -> SchemaT | None:
-    """
-    1. Tenta Gemini com retry curto em erros transitórios (503/429).
-    2. Se falhar, tenta provedor secundário configurado (se houver).
-    3. Se todos falharem por indisponibilidade/cota, retorna None para acionar fallback por regras.
-    """
+    global ultima_fonte_ia
+
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=schema_cls,
@@ -159,6 +167,7 @@ async def _gerar_estruturado_resiliente(
                     contents=prompt,
                     config=config,
                 )
+                ultima_fonte_ia = f"gemini ({modelo})"
                 return schema_cls.model_validate_json(resp.text)
             except Exception as exc:
                 ultimo_erro = exc
@@ -177,12 +186,13 @@ async def _gerar_estruturado_resiliente(
         if idx_modelo == 0 and erro_transitorio is not None:
             break
 
-    # Tenta provedor secundário antes de desistir da LLM
     secundario = await _chamar_provedor_secundario_json(prompt, schema_cls)
     if secundario is not None:
+        ultima_fonte_ia = f"provedor_secundario ({settings.openai_model})"
         return secundario
 
     if settings.permitir_fallback_regras:
+        ultima_fonte_ia = "regras_contingencia"
         return None
 
     raise erro_transitorio or ultimo_erro or RuntimeError("Falha ao consultar modelo de IA.")
@@ -256,21 +266,32 @@ async def preparar_texto_edital(lote: LoteEntrada) -> str:
         return f"{lote.texto_edital}\n\n[CONTEUDO EXTRAIDO DO PDF DO EDITAL]\n{texto_pdf}"
     if texto_pdf:
         return texto_pdf
-    return lote.texto_edital or "Edital completo não anexado ou PDF indisponível; analisar descrição do lote com rigor."
+    return (
+        lote.texto_edital
+        or "Edital completo não anexado ou PDF indisponível; analisar descrição do lote com rigor."
+    )
 
 
 def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResultado:
+    global ultima_fonte_ia
+    ultima_fonte_ia = "regras_contingencia"
+
     texto = f"{lote.titulo_lote} {lote.descricao_lote} {lote.comitente_credor}".lower()
     if distancia_km > settings.raio_maximo_km:
         return TriagemResultado(
-            aprovado=False,
+            aprovado_triagem=False,
+            confianca_recuperado_financiamento=0.0,
             categoria=None,
             modalidade_identificada=None,
-            motivo_descarte=f"Distância ({distancia_km:.1f} km) acima do limite de {settings.raio_maximo_km:.0f} km.",
+            motivo_descarte=(
+                f"Distância ({distancia_km:.1f} km) acima do limite de "
+                f"{settings.raio_maximo_km:.0f} km."
+            ),
         )
     if any(p in texto for p in ("sucata", "irrecuperável", "irrecuperavel", "moto ", "motocicleta")):
         return TriagemResultado(
-            aprovado=False,
+            aprovado_triagem=False,
+            confianca_recuperado_financiamento=0.0,
             categoria=None,
             modalidade_identificada=None,
             motivo_descarte="Categoria ou condição fora do escopo (sucata ou motocicleta).",
@@ -279,13 +300,46 @@ def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResult
     categoria = "caminhonete_4x4"
     if any(p in texto for p in ("caminhão", "caminhao", "cavalo mecânico", "carreta")):
         categoria = "caminhao"
-    elif any(p in texto for p in ("trator", "colheitadeira", "pulverizador", "máquina agrícola", "maquina agricola")):
+    elif any(
+        p in texto
+        for p in ("trator", "colheitadeira", "pulverizador", "máquina agrícola", "maquina agricola")
+    ):
         categoria = "maquina_agricola"
-    elif any(p in texto for p in ("apartamento", "casa ", "terreno", "galpão", "galpao", "imóvel", "imovel", "matrícula")):
+    elif any(
+        p in texto
+        for p in (
+            "apartamento",
+            "casa ",
+            "terreno",
+            "galpão",
+            "galpao",
+            "imóvel",
+            "imovel",
+            "matrícula",
+        )
+    ):
         categoria = "imovel"
 
+    fiduciaria_ok = any(
+        k in texto
+        for k in (
+            "alienação fiduciária",
+            "alienacao fiduciaria",
+            "recuperado de financiamento",
+            "retomada",
+            "banco ",
+            "financeira",
+            "bv ",
+            "santander",
+            "bradesco",
+            "itaú",
+            "itau",
+        )
+    )
+
     return TriagemResultado(
-        aprovado=True,
+        aprovado_triagem=True,
+        confianca_recuperado_financiamento=0.8 if fiduciaria_ok else 0.4,
         categoria=categoria,
         modalidade_identificada="Alienação Fiduciária / Retomada (fallback regras)",
         motivo_descarte=None,
@@ -293,7 +347,12 @@ def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResult
 
 
 def _auditoria_por_regras(lote: LoteEntrada, texto_edital: str) -> AuditoriaEditalResultado:
-    base_txt = f"{lote.titulo_lote} {lote.descricao_lote} {lote.comitente_credor} {texto_edital}".lower()
+    global ultima_fonte_ia
+    ultima_fonte_ia = "regras_contingencia"
+
+    base_txt = (
+        f"{lote.titulo_lote} {lote.descricao_lote} {lote.comitente_credor} {texto_edital}".lower()
+    )
     fiduciaria_ok = any(
         k in base_txt
         for k in (
@@ -310,11 +369,28 @@ def _auditoria_por_regras(lote: LoteEntrada, texto_edital: str) -> AuditoriaEdit
             "itau",
         )
     )
-    sinistro_grave = any(k in base_txt for k in ("sinistro grande monta", "sinistro grave", "enchente", "incêndio", "incendio"))
-    restricao = any(k in base_txt for k in ("bloqueio judicial", "indisponibilidade", "ação judicial", "acao judicial"))
+    sinistro_grave = any(
+        k in base_txt
+        for k in ("sinistro grande monta", "sinistro grave", "enchente", "incêndio", "incendio")
+    )
+    restricao = any(
+        k in base_txt
+        for k in ("bloqueio judicial", "indisponibilidade", "ação judicial", "acao judicial")
+    )
 
-    posse = "com_chave" if "com chave" in base_txt else ("desocupado" if "desocupado" in base_txt else "nao_informado")
-    debitos = "credor_vendedor" if any(k in base_txt for k in ("débitos quitados", "debitos quitados", "por conta do comitente")) else "misto_ou_incerto"
+    posse = (
+        "com_chave"
+        if "com chave" in base_txt
+        else ("desocupado" if "desocupado" in base_txt else "nao_informado")
+    )
+    debitos = (
+        "credor_vendedor"
+        if any(
+            k in base_txt
+            for k in ("débitos quitados", "debitos quitados", "por conta do comitente")
+        )
+        else "misto_ou_incerto"
+    )
 
     return AuditoriaEditalResultado(
         recuperado_financiamento_confirmado=fiduciaria_ok,
@@ -325,8 +401,12 @@ def _auditoria_por_regras(lote: LoteEntrada, texto_edital: str) -> AuditoriaEdit
         taxa_administrativa_estimada=1500.0,
         sinistro_ou_avaria_grave=sinistro_grave,
         restricao_documental_ou_judicial=restricao,
-        resumo_clausulas="Avaliação preliminar gerada por regras devido a instabilidade temporária da API de IA.",
-        alertas_criticos=["API de IA indisponível no momento: validar cláusulas do edital manualmente antes do lance."],
+        resumo_clausulas=(
+            "Avaliação preliminar gerada por regras devido a instabilidade temporária da API de IA."
+        ),
+        alertas_criticos=[
+            "API de IA indisponível no momento: validar cláusulas do edital manualmente antes do lance."
+        ],
     )
 
 
@@ -454,7 +534,11 @@ Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
     )
 
     if dados_curadoria is None:
-        score_base = 75 if nivel == "DIAMANTE" else (60 if semaforo == "VERDE" else (45 if semaforo == "AMARELO" else 25))
+        score_base = (
+            75
+            if nivel == "DIAMANTE"
+            else (60 if semaforo == "VERDE" else (45 if semaforo == "AMARELO" else 25))
+        )
         resumo_exec = (
             f"Análise por regras (API em instabilidade): ROI líquido estimado de "
             f"{viabilidade.margem_liquida_projetada_pct:.1f}% a {viabilidade.distancia_vinhedo_km:.1f} km de Vinhedo/SP."
