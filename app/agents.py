@@ -54,6 +54,7 @@ TERMOS_BLOQUEIO_ESCOPO = (
     "irrecuperavel",
     "moto ",
     "motocicleta",
+    "biz ",
     "4x2",
     "execução fiscal",
     "execucao fiscal",
@@ -186,7 +187,7 @@ def _prioridade_modelo_secundario(modelo_id: str) -> tuple[int, str]:
 
 
 def _normalizar_payload_schema(raw_content: str, schema_cls: type[SchemaT]) -> str:
-    """Corrige saídas comuns de modelos menores (ex.: 'categoria': 'null' ou confiança nula)."""
+    """Corrige saidas comuns de modelos menores antes da validacao Pydantic."""
     try:
         parsed = json.loads(raw_content)
     except Exception:
@@ -618,22 +619,27 @@ def _auditoria_por_regras(lote: LoteEntrada, texto_edital: str) -> AuditoriaEdit
 
 
 async def agente_2_triagem(lote: LoteEntrada, distancia_km: float) -> TriagemResultado:
-    prompt = f"""
-Você é um especialista sênior em leilões brasileiros. Avalie se o lote atende aos critérios estritos:
-- Base: {settings.base_cidade}/{settings.base_uf}, raio máximo de {settings.raio_maximo_km} km (distância calculada: {distancia_km:.1f} km).
-- Categorias permitidas: caminhonete_4x4, caminhao, maquina_agricola, imovel.
-- Origem obrigatória: RECUPERADO DE FINANCIAMENTO / ALIENAÇÃO FIDUCIÁRIA (retomada bancária, financeira ou banco de montadora).
-- Rejeite: leilões judiciais trabalhistas/fiscais, sucatas, carros 4x2 comuns, motos, equipamentos comerciais/eletrônicos/móveis fora das categorias permitidas ou distância acima de {settings.raio_maximo_km} km.
-- Se não houver indício de alienação fiduciária/retomada financeira ou se o bem não for uma das 4 categorias permitidas, reprove (aprovado_triagem=false).
-- Preencha sempre 'confianca_recuperado_financiamento' (0 a 100) e, se rejeitar, 'motivo_descarte' em 1 frase objetiva.
-
-Dados do lote:
-Leiloeiro: {lote.leiloeiro}
-Comitente: {lote.comitente_credor}
-Título: {lote.titulo_lote}
-Descrição: {lote.descricao_lote}
-Cidade/UF: {lote.cidade}/{lote.uf}
-"""
+    prompt = (
+        "Você é um especialista sênior em leilões brasileiros. Avalie se o lote atende aos critérios estritos:\n"
+        f"- Base: {settings.base_cidade}/{settings.base_uf}, raio máximo de {settings.raio_maximo_km} km "
+        f"(distância calculada: {distancia_km:.1f} km).\n"
+        "- Categorias permitidas: caminhonete_4x4, caminhao, maquina_agricola, imovel.\n"
+        "- Origem obrigatória: RECUPERADO DE FINANCIAMENTO / ALIENAÇÃO FIDUCIÁRIA "
+        "(retomada bancária, financeira ou banco de montadora).\n"
+        "- Rejeite: leilões judiciais trabalhistas/fiscais, sucatas, carros 4x2 comuns, motos, "
+        "equipamentos comerciais/eletrônicos/móveis fora das categorias permitidas ou distância acima de "
+        f"{settings.raio_maximo_km} km.\n"
+        "- Se não houver indício de alienação fiduciária/retomada financeira ou se o bem não for uma das "
+        "4 categorias permitidas, reprove (aprovado_triagem=false).\n"
+        "- Preencha sempre 'confianca_recuperado_financiamento' (0 a 100) e, se rejeitar, "
+        "'motivo_descarte' em 1 frase objetiva.\n\n"
+        "Dados do lote:\n"
+        f"Leiloeiro: {lote.leiloeiro}\n"
+        f"Comitente: {lote.comitente_credor}\n"
+        f"Título: {lote.titulo_lote}\n"
+        f"Descrição: {lote.descricao_lote}\n"
+        f"Cidade/UF: {lote.cidade}/{lote.uf}"
+    )
     res = await _gerar_estruturado_resiliente(
         prompt=prompt,
         schema_cls=TriagemResultado,
@@ -646,21 +652,22 @@ Cidade/UF: {lote.cidade}/{lote.uf}
 
 async def agente_3_auditor_edital(lote: LoteEntrada, categoria: str) -> AuditoriaEditalResultado:
     conteudo_edital = await preparar_texto_edital(lote)
-    prompt = f"""
-Você é um auditor jurídico e operacional de leilões extrajudiciais (Lei 9.514/97 e Decreto-Lei 911/69).
-Categoria do bem: {categoria}
-Comitente/Credor: {lote.comitente_credor}
-Descrição do lote: {lote.descricao_lote}
-Trechos/Texto do edital:
-{conteudo_edital[:32000]}
-
-Extraia com rigor:
-1. Se é recuperado de financiamento / alienação fiduciária confirmado.
-2. Situação de posse/chave (com_chave, sem_chave, desocupado, ocupado, nao_informado).
-3. Quem paga débitos anteriores (credor_vendedor, arrematante, misto_ou_incerto) e valor estimado se houver repasse ao arrematante.
-4. Comissão do leiloeiro (%) e taxa administrativa/pátio (R$).
-5. Sinistro/avaria grave ou restrição documental/judicial e alertas críticos.
-"""
+    prompt = (
+        "Você é um auditor jurídico e operacional de leilões extrajudiciais "
+        "(Lei 9.514/97 e Decreto-Lei 911/69).\n"
+        f"Categoria do bem: {categoria}\n"
+        f"Comitente/Credor: {lote.comitente_credor}\n"
+        f"Descrição do lote: {lote.descricao_lote}\n"
+        "Trechos/Texto do edital:\n"
+        f"{conteudo_edital[:32000]}\n\n"
+        "Extraia com rigor:\n"
+        "1. Se é recuperado de financiamento / alienação fiduciária confirmado.\n"
+        "2. Situação de posse/chave (com_chave, sem_chave, desocupado, ocupado, nao_informado).\n"
+        "3. Quem paga débitos anteriores (credor_vendedor, arrematante, misto_ou_incerto) e valor estimado "
+        "se houver repasse ao arrematante.\n"
+        "4. Comissão do leiloeiro (%) e taxa administrativa/pátio (R$).\n"
+        "5. Sinistro/avaria grave ou restrição documental/judicial e alertas críticos."
+    )
     res = await _gerar_estruturado_resiliente(
         prompt=prompt,
         schema_cls=AuditoriaEditalResultado,
@@ -722,20 +729,21 @@ async def agente_4_e_5_curador(
         semaforo = "AMARELO"
         nivel = "ATENCAO"
 
-    prompt = f"""
-Você é um gestor de ativos em {settings.base_cidade}/{settings.base_uf}.
-Gere um score de qualidade (0 a 100), um resumo executivo direto (até 3 linhas) e a ação recomendada para o arrematante.
-
-Lote: {lote.titulo_lote} ({lote.cidade}/{lote.uf}, {viabilidade.distancia_vinhedo_km} km)
-Semáforo: {semaforo} | Nível de Oportunidade: {nivel} (Meta Diamante >= {MARGEM_DIAMANTE_PCT:.0f}%)
-Lance atual: R$ {lote.lance_atual:,.2f} | Valor mercado: R$ {lote.valor_mercado_referencia:,.2f}
-Lance máximo recomendado (Meta Base {margem_meta:.0f}%): R$ {viabilidade.lance_maximo_recomendado:,.2f}
-Lance máximo Diamante (>= {MARGEM_DIAMANTE_PCT:.0f}%): R$ {viabilidade.lance_maximo_diamante:,.2f}
-Margem líquida projetada: {viabilidade.margem_liquida_projetada_pct:.1f}%
-Lucro líquido estimado: R$ {viabilidade.lucro_liquido_estimado:,.2f}
-Posse/Chave: {auditoria.posse_ou_chave} | Débitos: {auditoria.responsavel_debitos_anteriores}
-Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
-"""
+    alertas_txt = ", ".join(auditoria.alertas_criticos) or "Nenhum"
+    prompt = (
+        f"Você é um gestor de ativos em {settings.base_cidade}/{settings.base_uf}.\n"
+        "Gere um score de qualidade (0 a 100), um resumo executivo direto (até 3 linhas) "
+        "e a ação recomendada para o arrematante.\n\n"
+        f"Lote: {lote.titulo_lote} ({lote.cidade}/{lote.uf}, {viabilidade.distancia_vinhedo_km} km)\n"
+        f"Semáforo: {semaforo} | Nível de Oportunidade: {nivel} (Meta Diamante >= {MARGEM_DIAMANTE_PCT:.0f}%)\n"
+        f"Lance atual: R$ {lote.lance_atual:,.2f} | Valor mercado: R$ {lote.valor_mercado_referencia:,.2f}\n"
+        f"Lance máximo recomendado (Meta Base {margem_meta:.0f}%): R$ {viabilidade.lance_maximo_recomendado:,.2f}\n"
+        f"Lance máximo Diamante (>= {MARGEM_DIAMANTE_PCT:.0f}%): R$ {viabilidade.lance_maximo_diamante:,.2f}\n"
+        f"Margem líquida projetada: {viabilidade.margem_liquida_projetada_pct:.1f}%\n"
+        f"Lucro líquido estimado: R$ {viabilidade.lucro_liquido_estimado:,.2f}\n"
+        f"Posse/Chave: {auditoria.posse_ou_chave} | Débitos: {auditoria.responsavel_debitos_anteriores}\n"
+        f"Alertas: {alertas_txt}"
+    )
     dados_curadoria = await _gerar_estruturado_resiliente(
         prompt=prompt,
         schema_cls=ResumoCuradoriaSchema,
