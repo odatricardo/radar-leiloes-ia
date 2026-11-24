@@ -1,555 +1,893 @@
+import argparse
 import asyncio
-import math
+import logging
+import os
 import re
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import streamlit as st
+from playwright.async_api import Page, async_playwright
 
-from app import agents as ag
-from app.agents import listar_modelos_disponiveis
+from app.agents import resolver_distancia_km
 from app.config import settings
-from app.db import listar_oportunidades, salvar_lote_avaliado
-from app.finance import MARGEM_DIAMANTE_PCT
 from app.main import avaliar_lote_detalhado
 from app.models import LoteEntrada
 
-st.set_page_config(
-    page_title="Radar de Leilões IA — Recuperados de Financiamento",
-    page_icon="💎",
-    layout="wide",
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
+logger = logging.getLogger("radar_scraper")
 
-TERMOS_FORA_EXIBICAO = (
-    "moto ",
-    "motocicleta",
-    "biz ",
-    "honda/biz",
+UFS_BRASIL = {
+    "AC",
+    "AL",
+    "AP",
+    "AM",
+    "BA",
+    "CE",
+    "DF",
+    "ES",
+    "GO",
+    "MA",
+    "MT",
+    "MS",
+    "MG",
+    "PA",
+    "PB",
+    "PR",
+    "PE",
+    "PI",
+    "RJ",
+    "RN",
+    "RS",
+    "RO",
+    "RR",
+    "SC",
+    "SP",
+    "SE",
+    "TO",
+}
+
+PALAVRAS_BLOQUEIO = (
     "sucata",
-    "irrecuperável",
     "irrecuperavel",
-    "judicial online",
-    "leiloesjudiciais.com.br",
-    "execução fiscal",
+    "irrecuperável",
+    "motocicleta",
+    "moto ",
+    "biz ",
     "execucao fiscal",
+    "execução fiscal",
     "trabalhista",
-    "sem título",
-    "sem titulo",
+    "penhora",
+    "justica do trabalho",
+    "justiça do trabalho",
+    "judicial online",
+    "4x2",
+    "câmera",
+    "camera",
+    "alarme",
+    "nvr",
+    "gabinete",
+    "mesa",
+    "cadeira",
+    "aspirador",
+    "mixer",
+    "frigobar",
+    "freezer",
+    "expositora",
+    "ponte rolante",
+    "empilhadeira",
+    "torno",
+    "solda",
+    "gerador",
+    "motogerador",
+    "plataforma tesoura",
+    "plataforma elevatória",
+    "plataforma elevatoria",
+    "porta pallets",
+    "prateleiras",
+    "túnel de encolhimento",
+    "tunel de encolhimento",
+    "poliamida",
+    "instrumentos de percussão",
+    "instrumentos de percussao",
+    "cama elástica",
+    "cama elastica",
+    "entrar ou abrir conta",
+    "abrir conta",
+    "ver todos os eventos",
+    "ver todos os lotes",
+    "minha conta",
 )
 
-PESO_NIVEL = {
-    "DIAMANTE": 0,
-    "PADRAO": 1,
-    "PADRÃO": 1,
-    "ATENCAO": 2,
-    "ATENÇÃO": 2,
-    "DESCARTADO": 3,
+INDICADORES_FIDUCIARIA = (
+    "alienacao fiduciaria",
+    "alienação fiduciária",
+    "recuperado de financiamento",
+    "retomada",
+    "banco ",
+    "financeira",
+    "bv ",
+    "santander",
+    "bradesco",
+    "itau",
+    "itaú",
+    "john deere",
+    "cnh ",
+    "safra",
+    "consórcio",
+    "consorcio",
+)
+
+PADROES_URL_IGNORADA = (
+    "/login",
+    "/signin",
+    "/authorization",
+    "/cadastro",
+    "/minha-conta",
+    "/contato",
+    "/fale-conosco",
+    "/institucional",
+    "/quem-somos",
+    "/regulamento",
+    "/termos",
+    "/privacidade",
+    "/ajuda",
+    "/faq",
+    "/categorias",
+    "/categoria",
+    "/todos-eventos",
+    "accounts.superbid.net",
+    "javascript:",
+    "mailto:",
+    "tel:",
+)
+
+PADROES_URL_LOTE = (
+    "lote",
+    "item",
+    "bem",
+    "veiculo",
+    "imovel",
+    "leilao",
+    "evento",
+    "oferta",
+    "detalhe",
+    "asset",
+    "lot",
+    "pos-leilao",
+)
+
+URLS_ALTERNATIVAS_PORTAL: dict[str, list[str]] = {
+    "superbid.net": [
+        "https://exchange.superbid.net/pos-leilao/todos",
+        "https://www.superbid.net/leiloes",
+    ],
+    "sold.com.br": [
+        "https://www.sold.com.br/lotes",
+    ],
+    "sodresantoro.com.br": [
+        "https://www.sodresantoro.com.br/lotes",
+        "https://www.sodresantoro.com.br/",
+    ],
+    "vipleiloes.com.br": [
+        "https://www.vipleiloes.com.br/lotes",
+        "https://www.vipleiloes.com.br/",
+    ],
+    "portalzuk.com.br": [
+        "https://www.portalzuk.com.br/leilao-de-veiculos",
+        "https://www.portalzuk.com.br/leilao-de-imoveis",
+        "https://www.portalzuk.com.br/",
+    ],
+    "megaleiloes.com.br": [
+        "https://www.megaleiloes.com.br/veiculos/caminhoes",
+        "https://www.megaleiloes.com.br/veiculos",
+        "https://www.megaleiloes.com.br/imoveis",
+        "https://www.megaleiloes.com.br/",
+    ],
 }
 
-PESO_SEMAFORO = {
-    "VERDE": 0,
-    "AMARELO": 1,
-    "VERMELHO": 2,
-}
+
+def _limpar_env(nome: str, padrao: str = "") -> str:
+    valor = os.getenv(nome, padrao)
+    if not isinstance(valor, str):
+        return padrao
+    return valor.strip().strip('"').strip("'")
 
 
-def _correr_async(coro: Any) -> Any:
+def _sanitizar_variaveis_ambiente() -> None:
+    """Remove espaços ou quebras de linha acidentais em variáveis sensíveis."""
+    chaves_env = (
+        "GEMINI_API_KEY",
+        "GEMINI_MODEL_FAST",
+        "GEMINI_MODEL_AUDIT",
+        "GEMINI_FALLBACK_MODELS",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_BASE_URL",
+        "DATABASE_URL",
+        "GOOGLE_MAPS_API_KEY",
+    )
+    for chave in chaves_env:
+        atual = os.environ.get(chave)
+        if isinstance(atual, str) and atual != atual.strip():
+            os.environ[chave] = atual.strip()
+
+    for attr in ("gemini_api_key", "openai_api_key", "openai_base_url", "openai_model"):
+        val = getattr(settings, attr, None)
+        if isinstance(val, str):
+            setattr(settings, attr, val.strip())
+
+
+def _normalizar_texto(texto: str | None) -> str:
+    if not texto:
+        return ""
+    return " ".join(texto.lower().split())
+
+
+def _formatar_nome_cidade(bruto: str) -> str:
+    """Normaliza 'BARRETOS' ou 'são paulo' para 'Barretos' ou 'São Paulo'."""
+    limpo = " ".join(bruto.strip(" ,;-–/").split())
+    minusculas_conectivos = {"de", "da", "do", "das", "dos", "e"}
+    partes = limpo.lower().split(" ")
+    formatadas: list[str] = []
+    for idx, p in enumerate(partes):
+        if idx > 0 and p in minusculas_conectivos:
+            formatadas.append(p)
+        else:
+            formatadas.append(p.capitalize())
+    return " ".join(formatadas)
+
+
+def _parse_moeda_brl(bruto: str) -> float | None:
+    limpo = bruto.replace("R$", "").replace("\xa0", " ").strip()
+    if "," in limpo:
+        limpo = limpo.replace(".", "").replace(",", ".")
+    else:
+        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", limpo):
+            limpo = limpo.replace(".", "")
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, coro).result()
-        return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
+        val = float(limpo)
+        return val if val >= 500.0 else None
+    except ValueError:
+        return None
 
 
-def _normalizar_dataframe(raw_itens: Any) -> pd.DataFrame:
-    if not raw_itens:
-        return pd.DataFrame()
+def _extrair_valores_brl(texto: str) -> list[float]:
+    matches = re.findall(r"R\$\s*[\d\.]+(?:,\d{2})?", texto)
+    valores: list[float] = []
+    for bruto in matches:
+        val = _parse_moeda_brl(bruto)
+        if val is not None:
+            valores.append(val)
+    return valores
 
-    registros: list[dict[str, Any]] = []
-    for item in raw_itens:
-        if isinstance(item, dict):
-            base = dict(item)
-            if "titulo" in base and not base.get("titulo_lote"):
-                base["titulo_lote"] = base["titulo"]
-            for aninhado in ("curadoria", "triagem", "auditoria", "viabilidade", "payload_completo"):
-                sub = base.get(aninhado)
-                if isinstance(sub, dict):
-                    for k, v in sub.items():
-                        base.setdefault(k, v)
-            registros.append(base)
-        elif hasattr(item, "model_dump"):
-            dumped = item.model_dump()
-            for aninhado in ("triagem", "auditoria", "viabilidade"):
-                sub = dumped.get(aninhado)
-                if isinstance(sub, dict):
-                    for k, v in sub.items():
-                        dumped.setdefault(k, v)
-            registros.append(dumped)
 
-    if not registros:
-        return pd.DataFrame()
+def _extrair_valores_com_rotulo(texto: str) -> tuple[float | None, float | None]:
+    """
+    Retorna (lance_atual_ou_minimo, valor_avaliacao_ou_mercado) quando identificados no texto.
+    """
+    lance: float | None = None
+    avaliacao: float | None = None
 
-    df = pd.DataFrame(registros)
-
-    for col_num, padrao in (
-        ("score_qualidade", 0.0),
-        ("distancia_vinhedo_km", math.nan),
-        ("lance_atual", 0.0),
-        ("valor_mercado_referencia", 0.0),
-        ("margem_liquida_projetada_pct", 0.0),
-        ("lucro_liquido_estimado", 0.0),
-        ("lance_maximo_recomendado", 0.0),
-        ("lance_maximo_diamante", 0.0),
-    ):
-        if col_num in df.columns:
-            df[col_num] = pd.to_numeric(df[col_num], errors="coerce")
-            if not math.isnan(padrao):
-                df[col_num] = df[col_num].fillna(padrao)
-        else:
-            df[col_num] = padrao
-
-    if df["margem_liquida_projetada_pct"].eq(0.0).all():
-        mascara_val = (df["valor_mercado_referencia"] > 0) & (df["lance_atual"] > 0)
-        df.loc[mascara_val, "margem_liquida_projetada_pct"] = (
-            (
-                (df.loc[mascara_val, "valor_mercado_referencia"] - df.loc[mascara_val, "lance_atual"])
-                / df.loc[mascara_val, "valor_mercado_referencia"]
-            )
-            * 100.0
-        ).round(1)
-
-    for col_str, padrao in (
-        ("nivel_oportunidade", "PADRAO"),
-        ("semaforo", "AMARELO"),
-        ("categoria", "nao_informado"),
-        ("titulo_lote", ""),
-        ("descricao_lote", ""),
-        ("cidade", ""),
-        ("uf", ""),
-        ("leiloeiro", ""),
-        ("url_lote", ""),
-    ):
-        if col_str in df.columns:
-            df[col_str] = df[col_str].fillna(padrao).astype(str).str.strip()
-        else:
-            df[col_str] = padrao
-
-    df["nivel_oportunidade"] = df["nivel_oportunidade"].replace("", "PADRAO").str.upper()
-    df["semaforo"] = df["semaforo"].replace("", "AMARELO").str.upper()
-    df["categoria"] = df["categoria"].replace("", "nao_informado").str.lower()
-
-    mascara_incoerente = (df["nivel_oportunidade"] == "DIAMANTE") & (df["semaforo"] == "VERMELHO")
-    df.loc[mascara_incoerente, "nivel_oportunidade"] = "DESCARTADO"
-
-    for col_data in ("atualizado_em", "criado_em", "updated_at", "created_at"):
-        if col_data in df.columns:
-            dt_series = pd.to_datetime(df[col_data], errors="coerce", utc=True)
-            if dt_series.notna().any():
-                df["_dt_recente"] = dt_series
-                df = df.sort_values("_dt_recente", ascending=False, na_position="last").drop(
-                    columns=["_dt_recente"]
-                )
+    padroes_lance = (
+        r"(?:lance\s*(?:m[ií]nimo(?:\s*atual)?|inicial|atual))[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:valor\s*(?:do\s*lance|inicial|m[ií]nimo))[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
+    )
+    for pat in padroes_lance:
+        m = re.search(pat, texto, flags=re.IGNORECASE)
+        if m:
+            lance = _parse_moeda_brl(m.group(1))
+            if lance is not None:
                 break
 
-    return df.reset_index(drop=True)
-
-
-def filtrar_e_ordenar_oportunidades_com_diagnostico(
-    df: pd.DataFrame,
-    raio_max_km: float = 500.0,
-    exibir_descartados: bool = False,
-    categoria_filtro: str = "todas",
-) -> tuple[pd.DataFrame, dict[str, int], pd.DataFrame]:
-    """Filtra, deduplica, ordena e retorna (df_final, contadores, df_diagnostico)."""
-    contadores: dict[str, int] = {
-        "total_carregado": 0 if df is None else len(df),
-        "apos_status": 0,
-        "apos_titulo_e_raio": 0,
-        "apos_termos_bloqueio": 0,
-        "apos_dedup": 0,
-        "apos_categoria": 0,
-    }
-    if df is None or df.empty:
-        return pd.DataFrame(), contadores, pd.DataFrame()
-
-    out = df.copy()
-    out["_motivo_filtro"] = ""
-
-    if not exibir_descartados:
-        mask_status = (out["nivel_oportunidade"] != "DESCARTADO") & (out["semaforo"] != "VERMELHO")
-        out.loc[~mask_status & (out["_motivo_filtro"] == ""), "_motivo_filtro"] = (
-            "Status DESCARTADO ou VERMELHO (marque 'Exibir lotes DESCARTADOS / VERMELHOS')"
-        )
-        out = out[mask_status]
-    contadores["apos_status"] = len(out)
-
-    mask_titulo = out["titulo_lote"].str.len() >= 5
-    dist_num = pd.to_numeric(out["distancia_vinhedo_km"], errors="coerce")
-    mask_raio = dist_num.isna() | (dist_num <= raio_max_km)
-    mask_tr = mask_titulo & mask_raio
-    out.loc[~mask_tr & (out["_motivo_filtro"] == ""), "_motivo_filtro"] = (
-        f"Título curto (<5 chars) ou distância > {raio_max_km:.0f} km"
+    padroes_avaliacao = (
+        r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
     )
-    out = out[mask_tr]
-    contadores["apos_titulo_e_raio"] = len(out)
+    for pat in padroes_avaliacao:
+        m = re.search(pat, texto, flags=re.IGNORECASE)
+        if m:
+            avaliacao = _parse_moeda_brl(m.group(1))
+            if avaliacao is not None:
+                break
 
-    cols_texto = [
-        c
-        for c in ("titulo_lote", "titulo", "descricao_lote", "url_lote", "leiloeiro")
-        if c in out.columns
+    todos = _extrair_valores_brl(texto)
+    if lance is None and todos:
+        lance = min(todos)
+    if avaliacao is None and todos:
+        maior = max(todos)
+        if lance is not None and maior > lance:
+            avaliacao = maior
+        elif lance is not None:
+            avaliacao = round(lance * 1.45, 2)
+
+    if lance is not None and avaliacao is None:
+        avaliacao = round(lance * 1.45, 2)
+    if avaliacao is not None and lance is None:
+        lance = round(avaliacao * 0.60, 2)
+
+    return lance, avaliacao
+
+
+def _extrair_cidade_uf(
+    texto: str, padrao_cidade: str = "Não informada", padrao_uf: str = "XX"
+) -> tuple[str, str]:
+    """
+    Extrai (cidade, uf) a partir de padrões como 'Barretos-SP', 'Campinas/SP' ou 'Sorocaba - SP'.
+    """
+    janelas: list[str] = []
+    for kw in (
+        "localização",
+        "localizacao",
+        "avaliação",
+        "lance mínimo",
+        "depositário",
+        "comarca",
+        "cidade",
+        "endereço",
+    ):
+        for match in re.finditer(re.escape(kw), texto, flags=re.IGNORECASE):
+            inicio = max(0, match.start() - 80)
+            fim = min(len(texto), match.end() + 200)
+            janelas.append(texto[inicio:fim])
+    janelas.append(texto[:4500])
+
+    regex_loc = re.compile(
+        r"(?:^|[\s:;(\[])([A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*(?:/|-|–)\s*([A-Za-z]{2})(?=$|[\s.,;)\]])",
+        flags=re.MULTILINE,
+    )
+
+    for trecho in janelas:
+        for m in regex_loc.finditer(trecho):
+            cidade_bruta = m.group(1).strip(" ,;-–/([")
+            uf_cand = m.group(2).strip().upper()
+            if uf_cand not in UFS_BRASIL:
+                continue
+            baixa = cidade_bruta.lower()
+            if any(
+                ruido in baixa
+                for ruido in (
+                    "http",
+                    "www",
+                    "lote",
+                    "edital",
+                    "processo",
+                    "banco",
+                    "leilão",
+                    "leilao",
+                    "lance",
+                    "avaliação",
+                    "industrial",
+                    "máquinas",
+                    "maquinas",
+                    "equipamentos",
+                    "eventos",
+                    "localização",
+                    "localizacao",
+                )
+            ):
+                continue
+            cidade_fmt = _formatar_nome_cidade(cidade_bruta)
+            if len(cidade_fmt) >= 3:
+                return cidade_fmt[:80], uf_cand
+
+    return padrao_cidade, padrao_uf
+
+
+def _escolher_titulo_card(linhas: list[str], href: str) -> str:
+    candidatas = [
+        ln
+        for ln in linhas
+        if len(ln) >= 6
+        and not ln.lower().startswith(
+            ("r$", "lance", "ver lote", "detalhes", "saiba mais", "entrar", "ver todos")
+        )
+        and not re.fullmatch(r"\d+\s*lotes?", ln.strip().lower())
     ]
-    if cols_texto and not out.empty:
-        serie_texto = pd.Series("", index=out.index, dtype="object")
-        for c in cols_texto:
-            serie_texto = serie_texto + " " + out[c].fillna("").astype(str)
-        serie_texto = serie_texto.str.lower()
-        mascara_bloqueio = serie_texto.apply(
-            lambda txt: any(termo in txt for termo in TERMOS_FORA_EXIBICAO)
-        )
-        mascara_generico = out["titulo_lote"].str.lower().apply(
-            lambda t: bool(re.fullmatch(r"\d+\s*lotes?", t.strip()))
-        )
-        mask_ok_texto = ~(mascara_bloqueio | mascara_generico)
-        out.loc[~mask_ok_texto & (out["_motivo_filtro"] == ""), "_motivo_filtro"] = (
-            "Contém termo fora de exibição ou título genérico"
-        )
-        out = out[mask_ok_texto]
-    contadores["apos_termos_bloqueio"] = len(out)
+    if candidatas:
+        for ln in candidatas:
+            if any(
+                k in ln.lower()
+                for k in (
+                    "hilux",
+                    "ranger",
+                    "amarok",
+                    "s10",
+                    "sw4",
+                    "caminhao",
+                    "caminhão",
+                    "scania",
+                    "volvo",
+                    "mercedes",
+                    "iveco",
+                    "trator",
+                    "colheitadeira",
+                    "apartamento",
+                    "casa",
+                    "terreno",
+                    "galpao",
+                    "galpão",
+                    "imovel",
+                    "imóvel",
+                    "veiculo",
+                    "veículo",
+                )
+            ):
+                return ln[:180]
+        return candidatas[0][:180]
 
-    if not out.empty:
-        out["_chave_dedup"] = out.apply(
-            lambda r: (
-                r["url_lote"].strip().lower()
-                if r["url_lote"].strip()
-                else f"{r['titulo_lote'].lower()}|{r['cidade'].lower()}|{r['uf'].lower()}"
-            ),
-            axis=1,
-        )
-        dedup_df = out.drop_duplicates(subset=["_chave_dedup"], keep="first").drop(
-            columns=["_chave_dedup"]
-        )
-        removidos_idxs = set(out.index) - set(dedup_df.index)
-        if removidos_idxs:
-            out.loc[list(removidos_idxs), "_motivo_filtro"] = "Duplicado por URL/chave (mantido mais recente)"
-            contadores["deduplicados_removidos"] = len(removidos_idxs)
-        out = dedup_df
-    contadores["apos_dedup"] = len(out)
+    if linhas:
+        return linhas[0][:180]
 
-    if categoria_filtro != "todas" and not out.empty:
-        mask_cat = out["categoria"] == categoria_filtro
-        out.loc[~mask_cat & (out["_motivo_filtro"] == ""), "_motivo_filtro"] = (
-            f"Categoria diferente de '{categoria_filtro}'"
-        )
-        out = out[mask_cat]
-    contadores["apos_categoria"] = len(out)
+    parsed = urlparse(href)
+    slug = parsed.path.rstrip("/").split("/")[-1].replace("-", " ").replace("_", " ").strip()
+    return slug[:180] if slug else "Lote em Leilão"
 
-    motivos_por_idx = out["_motivo_filtro"].to_dict() if "_motivo_filtro" in out.columns else {}
-    df_diagnostico = df.copy()
-    if not out.empty:
-        idxs_mantidos = set(out.index)
-        df_diagnostico["_status_exibicao"] = df_diagnostico.index.map(
-            lambda i: "EXIBIDO" if i in idxs_mantidos else "OCULTADO/FILTRADO"
-        )
-    else:
-        df_diagnostico["_status_exibicao"] = "OCULTADO/FILTRADO"
 
-    df_diagnostico["_motivo_filtro"] = df_diagnostico.index.map(
-        lambda i: "OK"
-        if df_diagnostico.loc[i, "_status_exibicao"] == "EXIBIDO"
-        else motivos_por_idx.get(i, "Filtrado nas etapas anteriores")
+def _titulo_parece_generico(titulo: str) -> bool:
+    t = (titulo or "").strip().lower()
+    if not t or len(t) < 6:
+        return True
+    if re.fullmatch(r"\d+\s*lotes?", t):
+        return True
+    if t in {
+        "lote em leilão",
+        "lote em leilao",
+        "ver lote",
+        "detalhes",
+        "saiba mais",
+        "entrar ou abrir conta",
+        "ver todos os eventos",
+    }:
+        return True
+    return False
+
+
+def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
+    if not url_candidata:
+        return False
+    baixa = url_candidata.lower().strip()
+    if any(p in baixa for p in PADROES_URL_IGNORADA) or baixa == "#" or baixa.endswith("/#"):
+        return False
+    if baixa.rstrip("/") == url_base.rstrip("/").lower():
+        return False
+    parsed = urlparse(url_candidata)
+    caminho = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    if any(p in caminho or p in query for p in PADROES_URL_LOTE):
+        return True
+    if re.search(r"/\d{3,}/?$", caminho):
+        return True
+    return False
+
+
+def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | None]]:
+    """
+    Retorna pares (url_para_acessar, dominio_principal_se_fallback) preservando a ordem.
+    """
+    plano: list[tuple[str, str | None]] = []
+    vistas: set[str] = set()
+
+    for url in urls_base:
+        u_limpa = url.strip()
+        if not u_limpa or u_limpa in vistas:
+            continue
+        vistas.add(u_limpa)
+        plano.append((u_limpa, None))
+
+        host = (urlparse(u_limpa).netloc or "").lower().removeprefix("www.")
+        for dominio_chave, alternativas in URLS_ALTERNATIVAS_PORTAL.items():
+            if host == dominio_chave or host.endswith(f".{dominio_chave}"):
+                for alt in alternativas:
+                    if alt not in vistas:
+                        vistas.add(alt)
+                        plano.append((alt, dominio_chave))
+                break
+
+    return plano
+
+
+async def _rolar_pagina_lazy(page: Page, passos: int = 5, espera_s: float = 0.75) -> None:
+    """Rola a página em etapas para disparar carregamento lazy-load dos cards."""
+    try:
+        for _ in range(passos):
+            await page.evaluate("window.scrollBy(0, Math.floor(window.innerHeight * 0.85))")
+            await asyncio.sleep(espera_s)
+        await page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(0.35)
+    except Exception:
+        pass
+
+
+def _extrair_sinais_operacionais(texto: str) -> str:
+    """Extrai trechos curtos sobre chave, posse, desocupação ou retomada para apoiar a auditoria."""
+    baixa = texto.lower()
+    termos = (
+        "chave",
+        "chaves",
+        "desocupado",
+        "ocupado",
+        "posse",
+        "alienação fiduciária",
+        "alienacao fiduciaria",
+        "recuperado de financiamento",
+        "retomada",
+        "débito",
+        "debito",
+        "ipva",
+        "condomínio",
+        "condominio",
     )
-
-    if out.empty:
-        return out, contadores, df_diagnostico
-
-    out = out.drop(columns=["_motivo_filtro"], errors="ignore")
-    out["_ord_nivel"] = out["nivel_oportunidade"].map(PESO_NIVEL).fillna(9)
-    out["_ord_sem"] = out["semaforo"].map(PESO_SEMAFORO).fillna(9)
-    out["_ord_score"] = pd.to_numeric(out["score_qualidade"], errors="coerce").fillna(0)
-    out["_ord_margem"] = pd.to_numeric(out["margem_liquida_projetada_pct"], errors="coerce").fillna(0)
-
-    out = out.sort_values(
-        by=["_ord_nivel", "_ord_sem", "_ord_score", "_ord_margem"],
-        ascending=[True, True, False, False],
-    ).drop(columns=["_ord_nivel", "_ord_sem", "_ord_score", "_ord_margem"])
-
-    return out.reset_index(drop=True), contadores, df_diagnostico
+    trechos: list[str] = []
+    for termo in termos:
+        idx = baixa.find(termo)
+        if idx != -1:
+            ini = max(0, idx - 60)
+            fim = min(len(texto), idx + 120)
+            trecho = " ".join(texto[ini:fim].split())
+            if trecho not in trechos:
+                trechos.append(trecho)
+        if len(trechos) >= 6:
+            break
+    return " | ".join(trechos)
 
 
-def _formatar_moeda(valor: Any) -> str:
+async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[str, Any]:
+    """Abre a url_lote para extrair descrição, cidade/UF e valores reais quando disponível."""
+    url_lote = item.get("url_lote")
+    if not url_lote or not str(url_lote).startswith(("http://", "https://")):
+        return item
+
     try:
-        num = float(valor)
-        if math.isnan(num):
-            return "—"
-        return f"R$ {num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except Exception:
-        return "—"
+        await page.goto(url_lote, wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_timeout(1800)
+
+        texto_pagina = ""
+        seletores_desc = (
+            "[class*='descricao'], [class*='description'], [id*='descricao'], "
+            "[class*='detalhe-lote'], [class*='lot-detail'], main"
+        )
+        loc_desc = page.locator(seletores_desc).first
+        if await loc_desc.count():
+            texto_pagina = ((await loc_desc.inner_text()) or "").strip()
+
+        if len(texto_pagina) < 40:
+            texto_pagina = ((await page.locator("body").inner_text()) or "").strip()
+
+        if not texto_pagina:
+            return item
+
+        linhas_pag = [ln.strip() for ln in texto_pagina.splitlines() if len(ln.strip()) >= 4]
+        if _titulo_parece_generico(item.get("titulo_lote", "")) and linhas_pag:
+            for ln in linhas_pag:
+                if not _titulo_parece_generico(ln) and not ln.lower().startswith(
+                    ("home", "leilões", "leiloes", "entrar", "cadastrar", "r$")
+                ):
+                    item["titulo_lote"] = ln[:180]
+                    break
+
+        cidade_atual = item.get("cidade")
+        uf_atual = item.get("uf")
+        cidade_real, uf_real = _extrair_cidade_uf(
+            texto_pagina,
+            padrao_cidade=cidade_atual if cidade_atual and cidade_atual != "Não informada" else "Não informada",
+            padrao_uf=uf_atual if uf_atual and uf_atual != "XX" else "XX",
+        )
+        item["cidade"] = cidade_real
+        item["uf"] = uf_real
+
+        lance_real, avaliacao_real = _extrair_valores_com_rotulo(texto_pagina)
+        if lance_real is not None:
+            item["lance_atual"] = lance_real
+        if avaliacao_real is not None:
+            item["valor_mercado_referencia"] = avaliacao_real
+
+        pdf_link = page.locator("a[href*='.pdf'], a[href*='edital']").first
+        if await pdf_link.count():
+            href_pdf = await pdf_link.get_attribute("href")
+            if href_pdf:
+                item["url_edital_pdf"] = urljoin(url_lote, href_pdf.strip())
+
+        descricao_antiga = item.get("descricao_lote", "")
+        texto_limpo = " ".join(texto_pagina.split())
+        sinais = _extrair_sinais_operacionais(texto_limpo)
+        bloco_sinais = f"\n[SINAIS POSSE/EDITAL]: {sinais}" if sinais else ""
+        item["descricao_lote"] = (
+            f"{descricao_antiga}{bloco_sinais}\n\n[DETALHES DA PÁGINA DO LOTE]\n{texto_limpo[:2400]}".strip()[:3500]
+        )
+    except Exception as exc:
+        logger.debug("Não foi possível enriquecer página do lote %s: %s", url_lote, exc)
+
+    return item
 
 
-def _formatar_dist(valor: Any) -> str:
-    try:
-        num = float(valor)
-        if math.isnan(num):
-            return "—"
-        return f"{num:.1f} km"
-    except Exception:
-        return "—"
+def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
+    """Filtro rápido sem LLM para poupar cota diária de IA e evitar chamadas ao geocoder."""
+    titulo = _normalizar_texto(bruto.get("titulo_lote"))
+    descricao = _normalizar_texto(bruto.get("descricao_lote"))
+    comitente = _normalizar_texto(bruto.get("comitente_credor"))
+    url_lote = _normalizar_texto(bruto.get("url_lote"))
+    combinado = f"{titulo} {descricao} {comitente} {url_lote}"
+
+    if _titulo_parece_generico(bruto.get("titulo_lote", "")):
+        return False, "Título genérico ou de navegação/login/categoria."
+
+    cidade = (bruto.get("cidade") or "").strip()
+    if not titulo or not cidade or cidade.lower() in {"não informada", "nao informada"}:
+        return False, "Dados mínimos ausentes (título ou localização)."
+
+    for termo in PALAVRAS_BLOQUEIO:
+        if termo in combinado:
+            return False, f"Bloqueado no pré-filtro por termo: '{termo}'."
+
+    tem_indicio_fiduciaria = any(ind in combinado for ind in INDICADORES_FIDUCIARIA)
+    if not tem_indicio_fiduciaria:
+        return False, "Sem indício claro de alienação fiduciária / retomada financeira."
+
+    return True, "OK"
+
+
+async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
+    """
+    Coleta lotes via Playwright com suporte a lazy-loading, fallback de rotas por portal
+    e enriquecimento na página do lote.
+    """
+    _sanitizar_variaveis_ambiente()
+    urls_base = [
+        u.strip()
+        for u in _limpar_env("SCRAPER_TARGET_URLS").split(",")
+        if u.strip().startswith(("http://", "https://"))
+    ]
+    if not urls_base:
+        logger.info("Nenhuma URL em SCRAPER_TARGET_URLS; nenhum lote novo raspado nesta rodada.")
+        return []
+
+    plano_urls = _expandir_urls_com_fallback(urls_base)
+    coletados: list[dict[str, Any]] = []
+    urls_vistas: set[str] = set()
+    portais_com_candidatos: set[str] = set()
+    max_paginas_detalhe = min(max_itens, 8)
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1366, "height": 768},
+        )
+        page = await context.new_page()
+        page.set_default_timeout(25000)
+
+        for url, origem_fallback in plano_urls:
+            if len(coletados) >= max_itens:
+                break
+            if origem_fallback and origem_fallback in portais_com_candidatos:
+                continue
+
+            try:
+                logger.info("Acessando portal: %s", url)
+                await page.goto(url, wait_until="domcontentloaded")
+                await page.wait_for_timeout(2500)
+                await _rolar_pagina_lazy(page)
+
+                seletor_cards = (
+                    "article, .lot-card, .card-lote, [data-testid='lot-card'], "
+                    ".card-auction, .auction-card, .card-item, .offer-card, "
+                    "[class*='lot-card'], [class*='card-lote'], [class*='LotCard'], [class*='CardLote']"
+                )
+                cards = page.locator(seletor_cards)
+                total_cards = await cards.count()
+
+                candidatos_extraidos = 0
+                for idx in range(min(total_cards, max_itens * 3)):
+                    if len(coletados) >= max_itens:
+                        break
+                    card = cards.nth(idx)
+                    texto_card = ((await card.inner_text()) or "").strip()
+                    linhas = [ln.strip() for ln in texto_card.splitlines() if ln.strip()]
+                    if not linhas or len(texto_card) < 12:
+                        continue
+
+                    href_raw = ""
+                    links = card.locator("a[href]")
+                    total_links = await links.count()
+                    for l_idx in range(total_links):
+                        cand = await links.nth(l_idx).get_attribute("href")
+                        if cand:
+                            abs_cand = urljoin(url, cand.strip())
+                            if _url_parece_lote(abs_cand, url):
+                                href_raw = abs_cand
+                                break
+                    if not href_raw and total_links > 0:
+                        cand0 = await links.first.get_attribute("href")
+                        if cand0:
+                            abs0 = urljoin(url, cand0.strip())
+                            if _url_parece_lote(abs0, url):
+                                href_raw = abs0
+
+                    if not href_raw or href_raw in urls_vistas:
+                        continue
+                    urls_vistas.add(href_raw)
+
+                    titulo = _escolher_titulo_card(linhas, href_raw)
+                    lance_est, mercado_est = _extrair_valores_com_rotulo(texto_card)
+                    cidade_card, uf_card = _extrair_cidade_uf(texto_card)
+
+                    coletados.append(
+                        {
+                            "leiloeiro": urlparse(url).netloc or "Portal Leilão",
+                            "comitente_credor": "Banco / Financeira (verificar edital)",
+                            "numero_lote": str(idx + 1),
+                            "url_lote": href_raw,
+                            "url_edital_pdf": None,
+                            "titulo_lote": titulo,
+                            "descricao_lote": texto_card[:1500],
+                            "cidade": cidade_card,
+                            "uf": uf_card,
+                            "lance_atual": lance_est if lance_est is not None else 100000.0,
+                            "valor_mercado_referencia": (
+                                mercado_est if mercado_est is not None else 160000.0
+                            ),
+                        }
+                    )
+                    candidatos_extraidos += 1
+
+                if candidatos_extraidos == 0:
+                    anchors = page.locator("a[href]")
+                    total_anchors = await anchors.count()
+                    for a_idx in range(min(total_anchors, 300)):
+                        if len(coletados) >= max_itens:
+                            break
+                        anc = anchors.nth(a_idx)
+                        href_raw = await anc.get_attribute("href")
+                        if not href_raw:
+                            continue
+                        abs_href = urljoin(url, href_raw.strip())
+                        if not _url_parece_lote(abs_href, url) or abs_href in urls_vistas:
+                            continue
+
+                        texto_anc = " ".join(((await anc.inner_text()) or "").split()).strip()
+                        if len(texto_anc) < 8:
+                            continue
+
+                        urls_vistas.add(abs_href)
+                        lance_est, mercado_est = _extrair_valores_com_rotulo(texto_anc)
+                        cidade_anc, uf_anc = _extrair_cidade_uf(texto_anc)
+
+                        coletados.append(
+                            {
+                                "leiloeiro": urlparse(url).netloc or "Portal Leilão",
+                                "comitente_credor": "Banco / Financeira (verificar edital)",
+                                "numero_lote": str(candidatos_extraidos + 1),
+                                "url_lote": abs_href,
+                                "url_edital_pdf": None,
+                                "titulo_lote": texto_anc[:180],
+                                "descricao_lote": texto_anc[:1500],
+                                "cidade": cidade_anc,
+                                "uf": uf_anc,
+                                "lance_atual": lance_est if lance_est is not None else 100000.0,
+                                "valor_mercado_referencia": (
+                                    mercado_est if mercado_est is not None else 160000.0
+                                ),
+                            }
+                        )
+                        candidatos_extraidos += 1
+
+                if candidatos_extraidos > 0:
+                    host_atual = (urlparse(url).netloc or "").lower().removeprefix("www.")
+                    for dom in URLS_ALTERNATIVAS_PORTAL:
+                        if host_atual == dom or host_atual.endswith(f".{dom}"):
+                            portais_com_candidatos.add(dom)
+
+                logger.info(
+                    "Encontrados %d elementos candidatos em %s", candidatos_extraidos, url
+                )
+            except Exception as exc:
+                logger.warning("Falha ao raspar %s: %s", url, exc)
+
+        page_detalhe = await context.new_page()
+        page_detalhe.set_default_timeout(20000)
+        for idx_item in range(min(len(coletados), max_paginas_detalhe)):
+            coletados[idx_item] = await _enriquecer_lote_na_pagina(page_detalhe, coletados[idx_item])
+
+        await browser.close()
+
+    return coletados
+
+
+async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: float = 2.5) -> None:
+    _sanitizar_variaveis_ambiente()
+    brutos = await coletar_lotes_exemplo(max_itens=max_lotes * 4)
+    if not brutos:
+        logger.info("Pipeline encerrado sem novos lotes para avaliar.")
+        return
+
+    avaliados = 0
+    aprovados = 0
+
+    for bruto in brutos:
+        if avaliados >= max_lotes:
+            logger.info("Limite de %d lotes avaliados por execução atingido.", max_lotes)
+            break
+
+        ok_filtro, motivo_filtro = pre_filtrar_lote_bruto(bruto)
+        if not ok_filtro:
+            logger.info("Descartado no pré-filtro (%s): %s", motivo_filtro, bruto.get("titulo_lote"))
+            continue
+
+        try:
+            lote_obj = LoteEntrada(**bruto)
+        except Exception as exc:
+            logger.warning("Lote inválido para schema LoteEntrada: %s", exc)
+            continue
+
+        dist_km = await resolver_distancia_km(lote_obj)
+        if dist_km > settings.raio_maximo_km:
+            logger.info(
+                "Fora do raio de %.0f km (%.1f km em %s/%s): %s",
+                settings.raio_maximo_km,
+                dist_km,
+                lote_obj.cidade,
+                lote_obj.uf,
+                lote_obj.titulo_lote,
+            )
+            continue
+
+        lote_obj.distancia_vinhedo_km = dist_km
+        avaliados += 1
+        logger.info(
+            "[%d/%d] Avaliando lote: %s (%s/%s - %.1f km) -> %s",
+            avaliados,
+            max_lotes,
+            lote_obj.titulo_lote,
+            lote_obj.cidade,
+            lote_obj.uf,
+            dist_km,
+            lote_obj.url_lote,
+        )
+
+        try:
+            resultado = await avaliar_lote_detalhado(lote_obj)
+            if resultado and resultado.aprovado:
+                aprovados += 1
+                logger.info("APROVADO e salvo: %s", lote_obj.titulo_lote)
+            else:
+                logger.info(
+                    "Rejeitado na triagem/auditoria: %s",
+                    getattr(resultado, "motivo_rejeicao", "sem motivo"),
+                )
+        except Exception as exc:
+            logger.error("Erro ao avaliar lote '%s': %s", lote_obj.titulo_lote, exc)
+            msg = str(exc)
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg:
+                logger.warning("Instabilidade ou cota atingida; encerrando rodada com segurança.")
+                break
+
+        await asyncio.sleep(delay_entre_lotes_s)
+
+    logger.info("Resumo da execução: %d avaliados via IA, %d aprovados/salvos.", avaliados, aprovados)
 
 
 def main() -> None:
-    st.title("💎 Radar de Leilões IA — Recuperados de Financiamento")
-    st.caption(
-        f"Base operacional: {settings.base_cidade}/{settings.base_uf} • "
-        f"Raio máximo: {settings.raio_maximo_km:.0f} km • "
-        f"Corte Diamante: {MARGEM_DIAMANTE_PCT:.0f}%+"
+    _sanitizar_variaveis_ambiente()
+    parser = argparse.ArgumentParser(description="Coletor automático do Radar Leilões IA")
+    parser.add_argument(
+        "--max-lotes",
+        type=int,
+        default=int(_limpar_env("MAX_LOTES_POR_EXECUCAO", "3") or "3"),
+        help="Máximo de lotes enviados para a IA por execução",
     )
-
-    if "oportunidades_raw" not in st.session_state:
-        try:
-            st.session_state["oportunidades_raw"] = listar_oportunidades(limite=200)
-        except Exception as exc:
-            st.session_state["oportunidades_raw"] = []
-            st.warning(f"Não foi possível carregar oportunidades iniciais do banco: {exc}")
-
-    with st.sidebar:
-        st.header("Controles & Filtros")
-        if st.button("🔄 Atualizar Dados do Banco", use_container_width=True):
-            try:
-                st.session_state["oportunidades_raw"] = listar_oportunidades(limite=200)
-                st.success("Dados atualizados!")
-            except Exception as exc:
-                st.error(f"Erro ao atualizar dados: {exc}")
-
-        exibir_descartados = st.checkbox("Exibir lotes DESCARTADOS / VERMELHOS", value=False)
-        raio_filtro = st.slider(
-            "Raio máximo de exibição (km)",
-            min_value=50,
-            max_value=int(settings.raio_maximo_km),
-            value=int(settings.raio_maximo_km),
-            step=25,
-        )
-
-        categorias_opcoes = ["todas", "caminhonete_4x4", "caminhao", "maquina_agricola", "imovel"]
-        categoria_filtro = st.selectbox("Categoria de ativo", categorias_opcoes, index=0)
-
-        with st.expander("Modelos IA Ativos"):
-            try:
-                modelos_gem = listar_modelos_disponiveis()
-                st.caption("Gemini: " + (", ".join(modelos_gem[:4]) if modelos_gem else "padrão"))
-            except Exception:
-                st.caption("Gemini: cadeia configurada")
-            st.caption(f"Secundário: {settings.openai_model or 'auto'}")
-            st.caption(f"Última fonte: {ag.ultima_fonte_ia}")
-
-    df_base = _normalizar_dataframe(st.session_state.get("oportunidades_raw", []))
-    df_filtrado, contadores, df_diagnostico = filtrar_e_ordenar_oportunidades_com_diagnostico(
-        df_base,
-        raio_max_km=float(raio_filtro),
-        exibir_descartados=exibir_descartados,
-        categoria_filtro=categoria_filtro,
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=2.5,
+        help="Pausa em segundos entre lotes para reduzir picos de API",
     )
-
-    col1, col2, col3, col4 = st.columns(4)
-    total_exibidos = len(df_filtrado)
-    total_diamante = (
-        int((df_filtrado["nivel_oportunidade"] == "DIAMANTE").sum())
-        if not df_filtrado.empty
-        else 0
-    )
-    total_verdes = (
-        int((df_filtrado["semaforo"] == "VERDE").sum()) if not df_filtrado.empty else 0
-    )
-    margem_media = (
-        float(df_filtrado["margem_liquida_projetada_pct"].mean())
-        if not df_filtrado.empty
-        else 0.0
-    )
-
-    col1.metric("Oportunidades Válidas", total_exibidos)
-    col2.metric("Nível DIAMANTE", total_diamante)
-    col3.metric("Semáforo VERDE", total_verdes)
-    col4.metric("Margem Líquida Média", f"{margem_media:.1f}%")
-
-    with st.expander("🩺 Diagnóstico de Registros do Banco vs. Filtros"):
-        st.json(contadores)
-        if not df_diagnostico.empty:
-            cols_diag = [
-                c
-                for c in (
-                    "_status_exibicao",
-                    "_motivo_filtro",
-                    "lote_id",
-                    "titulo_lote",
-                    "categoria",
-                    "cidade",
-                    "uf",
-                    "distancia_vinhedo_km",
-                    "semaforo",
-                    "nivel_oportunidade",
-                    "margem_liquida_projetada_pct",
-                )
-                if c in df_diagnostico.columns
-            ]
-            st.dataframe(df_diagnostico[cols_diag], use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    g_col1, g_col2 = st.columns(2)
-    with g_col1:
-        st.subheader("Margem Líquida (%) vs. Distância")
-        if df_filtrado.empty:
-            st.info("Sem oportunidades válidas para plotar no gráfico de dispersão.")
-        else:
-            df_plot = df_filtrado.dropna(subset=["distancia_vinhedo_km"]).copy()
-            if df_plot.empty:
-                st.info("Nenhuma oportunidade com distância informada para o gráfico.")
-            else:
-                fig_disp = px.scatter(
-                    df_plot,
-                    x="distancia_vinhedo_km",
-                    y="margem_liquida_projetada_pct",
-                    color="nivel_oportunidade",
-                    hover_name="titulo_lote",
-                    labels={
-                        "distancia_vinhedo_km": "Distância de Vinhedo/SP (km)",
-                        "margem_liquida_projetada_pct": "Margem Líquida Real (%)",
-                        "nivel_oportunidade": "Classificação",
-                    },
-                )
-                fig_disp.add_hline(
-                    y=MARGEM_DIAMANTE_PCT,
-                    line_dash="dash",
-                    annotation_text=f"Linha Diamante ({MARGEM_DIAMANTE_PCT:.0f}%)",
-                    annotation_position="top right",
-                )
-                st.plotly_chart(fig_disp, use_container_width=True)
-
-    with g_col2:
-        st.subheader("ROI Líquido Médio por Classe de Ativo")
-        if df_filtrado.empty:
-            st.info("Sem oportunidades válidas para calcular ROI por categoria.")
-        else:
-            df_cat = (
-                df_filtrado.groupby("categoria", as_index=False)["margem_liquida_projetada_pct"]
-                .mean()
-                .sort_values("margem_liquida_projetada_pct", ascending=False)
-            )
-            fig_bar = go.Figure(
-                data=[
-                    go.Bar(
-                        x=df_cat["categoria"],
-                        y=df_cat["margem_liquida_projetada_pct"].round(1),
-                        text=[f"{v:.1f}%" for v in df_cat["margem_liquida_projetada_pct"]],
-                        textposition="auto",
-                    )
-                ]
-            )
-            fig_bar.update_layout(
-                xaxis_title="Classe de Ativo",
-                yaxis_title="ROI Líquido Médio (%)",
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-    st.divider()
-
-    st.subheader("Ranking de Lotes Aprovados (Ordenado por Prioridade e Score)")
-    if df_filtrado.empty:
-        st.info(
-            "Nenhum lote aprovado dentro dos critérios (alienação fiduciária/retomada, "
-            f"categorias permitidas e raio de até {raio_filtro} km) encontrado no momento."
-        )
-    else:
-        tabela = pd.DataFrame(
-            {
-                "Nível": df_filtrado["nivel_oportunidade"],
-                "Status": df_filtrado["semaforo"],
-                "Score": df_filtrado["score_qualidade"].round(0).astype(int),
-                "Ativo": df_filtrado["categoria"],
-                "Lote": df_filtrado["titulo_lote"],
-                "Cidade": df_filtrado["cidade"],
-                "UF": df_filtrado["uf"],
-                "Dist. (km)": df_filtrado["distancia_vinhedo_km"].apply(_formatar_dist),
-                "Lance Atual": df_filtrado["lance_atual"].apply(_formatar_moeda),
-                "Avaliação/Mercado": df_filtrado["valor_mercado_referencia"].apply(_formatar_moeda),
-                "Margem (%)": df_filtrado["margem_liquida_projetada_pct"].apply(
-                    lambda v: f"{float(v):.1f}%" if pd.notna(v) else "—"
-                ),
-                "Abrir Anúncio": df_filtrado["url_lote"],
-            }
-        )
-        st.dataframe(
-            tabela,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Abrir Anúncio": st.column_config.LinkColumn(
-                    "Abrir Anúncio",
-                    display_text="Abrir Anúncio",
-                )
-            },
-        )
-
-    with st.expander("Avaliar Lote Manualmente"):
-        with st.form("form_avaliar_lote"):
-            c1, c2, c3 = st.columns(3)
-            leiloeiro = c1.text_input("Leiloeiro", value="Portal Leilão")
-            comitente = c2.text_input("Comitente / Credor", value="Banco / Alienação Fiduciária")
-            num_lote = c3.text_input("Número do Lote", value="01")
-
-            c4, c5, c6 = st.columns(3)
-            cidade = c4.text_input("Cidade", value="Campinas")
-            uf = c5.text_input("UF", value="SP", max_chars=2)
-            url_lote = c6.text_input("URL do Anúncio", value="https://exemplo.com/lote/01")
-
-            titulo = st.text_input(
-                "Título do Lote",
-                value="Toyota Hilux CD 4x4 Diesel — Recuperado de Financiamento",
-            )
-            descricao = st.text_area(
-                "Descrição / Edital",
-                value="Veículo retomado por alienação fiduciária, com chave, sem débitos para o arrematante.",
-            )
-
-            c7, c8 = st.columns(2)
-            lance_atual = c7.number_input("Lance Atual (R$)", min_value=100.0, value=110000.0, step=1000.0)
-            valor_mercado = c8.number_input(
-                "Valor de Mercado / Avaliação (R$)", min_value=100.0, value=185000.0, step=1000.0
-            )
-
-            submitted = st.form_submit_button("Avaliar e Salvar")
-            if submitted:
-                try:
-                    lote_in = LoteEntrada(
-                        leiloeiro=leiloeiro,
-                        comitente_credor=comitente,
-                        numero_lote=num_lote,
-                        url_lote=url_lote,
-                        titulo_lote=titulo,
-                        descricao_lote=descricao,
-                        cidade=cidade,
-                        uf=uf,
-                        lance_atual=lance_atual,
-                        valor_mercado_referencia=valor_mercado,
-                    )
-                    resp = _correr_async(avaliar_lote_detalhado(lote_in))
-                    if resp.aprovado and resp.curadoria:
-                        salvar_lote_avaliado(lote_in, resp.curadoria)
-                        st.session_state["oportunidades_raw"] = listar_oportunidades(limite=200)
-                        st.success(
-                            f"Aprovado! Nível: {resp.curadoria.nivel_oportunidade} | "
-                            f"Semáforo: {resp.curadoria.semaforo} | Score: {resp.curadoria.score_qualidade}"
-                        )
-                    else:
-                        st.warning(f"Reprovado: {resp.motivo_rejeicao or 'Fora dos critérios.'}")
-                except Exception as exc:
-                    st.error(f"Erro ao avaliar lote: {exc}")
+    args = parser.parse_args()
+    asyncio.run(executar_pipeline_coleta(max_lotes=args.max_lotes, delay_entre_lotes_s=args.delay))
 
 
 if __name__ == "__main__":
