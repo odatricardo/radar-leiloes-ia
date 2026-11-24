@@ -47,6 +47,26 @@ class ResumoCuradoriaSchema(BaseModel):
     acao_recomendada: str
 
 
+def listar_modelos_disponiveis() -> list[str]:
+    """Consulta na API do Gemini os modelos ativos para a chave atual."""
+    modelos_ativos: list[str] = []
+    try:
+        for m in client.models.list():
+            nome = (getattr(m, "name", "") or "").replace("models/", "").strip()
+            acoes = getattr(m, "supported_actions", None) or getattr(m, "supported_generation_methods", None) or []
+            if not nome or "gemini" not in nome.lower():
+                continue
+            if any(b in nome.lower() for b in ("embedding", "imagen", "veo", "aqa", "tts", "audio", "robotics")):
+                continue
+            if acoes and "generateContent" not in acoes:
+                continue
+            if nome not in modelos_ativos:
+                modelos_ativos.append(nome)
+    except Exception:
+        pass
+    return modelos_ativos or settings.obter_cadeia_modelos()
+
+
 async def _gerar_com_retry(
     contents: str,
     config: types.GenerateContentConfig,
@@ -54,9 +74,11 @@ async def _gerar_com_retry(
     modelo_fallback: str | None = None,
     max_tentativas: int = 2,
 ):
-    modelos = [modelo_principal]
-    if modelo_fallback and modelo_fallback != modelo_principal:
-        modelos.append(modelo_fallback)
+    modelos = settings.obter_cadeia_modelos(modelo_principal)
+    if modelo_fallback:
+        nome_fb = modelo_fallback.replace("models/", "").strip()
+        if nome_fb and nome_fb not in modelos:
+            modelos.insert(1, nome_fb)
 
     ultimo_erro: Exception | None = None
     for modelo in modelos:
@@ -74,9 +96,12 @@ async def _gerar_com_retry(
                 eh_transitorio = (not eh_erro_fixo) and any(
                     marcador in msg for marcador in TRANSIENT_MARKERS
                 )
+                # Se for erro fixo (ex: 404), pula imediatamente para o próximo modelo da cadeia
+                if eh_erro_fixo:
+                    break
                 if not eh_transitorio or tentativa == max_tentativas - 1:
                     break
-                espera = (1.2 * (tentativa + 1)) + random.uniform(0.1, 0.5)
+                espera = (1.0 * (tentativa + 1)) + random.uniform(0.1, 0.4)
                 await asyncio.sleep(espera)
 
     assert ultimo_erro is not None
@@ -304,4 +329,3 @@ Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
         auditoria=auditoria,
         viabilidade=viabilidade,
     )
-
