@@ -148,7 +148,17 @@ def _normalizar_dataframe(raw_itens: Any) -> pd.DataFrame:
     mascara_incoerente = (df["nivel_oportunidade"] == "DIAMANTE") & (df["semaforo"] == "VERMELHO")
     df.loc[mascara_incoerente, "nivel_oportunidade"] = "DESCARTADO"
 
-    return df
+    for col_data in ("atualizado_em", "criado_em", "updated_at", "created_at"):
+        if col_data in df.columns:
+            dt_series = pd.to_datetime(df[col_data], errors="coerce", utc=True)
+            if dt_series.notna().any():
+                df["_dt_recente"] = dt_series
+                df = df.sort_values("_dt_recente", ascending=False, na_position="last").drop(
+                    columns=["_dt_recente"]
+                )
+                break
+
+    return df.reset_index(drop=True)
 
 
 def filtrar_e_ordenar_oportunidades_com_diagnostico(
@@ -222,13 +232,12 @@ def filtrar_e_ordenar_oportunidades_com_diagnostico(
             ),
             axis=1,
         )
-        antes_dedup = len(out)
         dedup_df = out.drop_duplicates(subset=["_chave_dedup"], keep="first").drop(
             columns=["_chave_dedup"]
         )
         removidos_idxs = set(out.index) - set(dedup_df.index)
         if removidos_idxs:
-            out.loc[list(removidos_idxs), "_motivo_filtro"] = "Duplicado por URL/chave"
+            out.loc[list(removidos_idxs), "_motivo_filtro"] = "Duplicado por URL/chave (mantido mais recente)"
             contadores["deduplicados_removidos"] = len(removidos_idxs)
         out = dedup_df
     contadores["apos_dedup"] = len(out)
