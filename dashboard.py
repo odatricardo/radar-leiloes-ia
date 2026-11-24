@@ -5,6 +5,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.agents import listar_modelos_disponiveis
+from app.config import settings
 from app.db import listar_oportunidades
 from app.main import avaliar_lote_detalhado
 from app.models import LoteEntrada
@@ -40,6 +42,11 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def carregar_modelos_cached() -> list[str]:
+    return listar_modelos_disponiveis()
 
 
 def formatar_brl(valor: float) -> str:
@@ -79,6 +86,22 @@ with st.sidebar:
     )
     raio_max = st.slider("Distância máxima de Vinhedo (km)", min_value=50, max_value=500, value=500, step=25)
     roi_min_filtro = st.slider("Margem líquida mínima exibida (%)", min_value=15, max_value=60, value=20, step=1)
+
+    st.divider()
+    st.subheader("2. Motor Gemini Ativo")
+    modelos_disponiveis = carregar_modelos_cached()
+    indice_padrao = (
+        modelos_disponiveis.index(settings.gemini_model_fast)
+        if settings.gemini_model_fast in modelos_disponiveis
+        else 0
+    )
+    modelo_selecionado = st.selectbox(
+        "Modelo Principal (troque se der 503)",
+        options=modelos_disponiveis,
+        index=indice_padrao,
+    )
+    settings.gemini_model_fast = modelo_selecionado
+    settings.gemini_model_audit = modelo_selecionado
 
     st.divider()
     if st.button("🔄 Atualizar Dados do Banco", width="stretch"):
@@ -243,7 +266,9 @@ with tab_dash:
 
 with tab_avaliar:
     st.subheader("Auditoria Instantânea com Agentes de IA")
-    st.caption("Cole os dados ou o link do PDF do edital abaixo. Os Agentes 2, 3, 4 e 5 auditam e salvam direto no painel.")
+    st.caption(
+        f"Modelo ativo: **{modelo_selecionado}**. Cole os dados ou o link do PDF do edital abaixo para auditar e salvar direto no painel."
+    )
 
     with st.form("form_novo_lote"):
         col1, col2, col3 = st.columns(3)
@@ -275,7 +300,9 @@ with tab_avaliar:
             st.error("Preencha pelo menos Leiloeiro, Banco Credor, Título e Cidade.")
         else:
             inicio = time.perf_counter()
-            with st.spinner("Os agentes estão lendo o edital, calculando distância de Vinhedo/SP e auditando riscos..."):
+            with st.spinner(
+                f"Auditando lote com {modelo_selecionado} e calculando distância de Vinhedo/SP..."
+            ):
                 lote_obj = LoteEntrada(
                     leiloeiro=leiloeiro,
                     comitente_credor=comitente,
