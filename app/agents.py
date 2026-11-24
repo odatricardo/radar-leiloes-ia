@@ -719,3 +719,68 @@ async def agente_4_e_5_curador(
         semaforo = "VERDE"
         nivel = "PADRAO"
     else:
+        semaforo = "AMARELO"
+        nivel = "ATENCAO"
+
+    prompt = f"""
+Você é um gestor de ativos em {settings.base_cidade}/{settings.base_uf}.
+Gere um score de qualidade (0 a 100), um resumo executivo direto (até 3 linhas) e a ação recomendada para o arrematante.
+
+Lote: {lote.titulo_lote} ({lote.cidade}/{lote.uf}, {viabilidade.distancia_vinhedo_km} km)
+Semáforo: {semaforo} | Nível de Oportunidade: {nivel} (Meta Diamante >= {MARGEM_DIAMANTE_PCT:.0f}%)
+Lance atual: R$ {lote.lance_atual:,.2f} | Valor mercado: R$ {lote.valor_mercado_referencia:,.2f}
+Lance máximo recomendado (Meta Base {margem_meta:.0f}%): R$ {viabilidade.lance_maximo_recomendado:,.2f}
+Lance máximo Diamante (>= {MARGEM_DIAMANTE_PCT:.0f}%): R$ {viabilidade.lance_maximo_diamante:,.2f}
+Margem líquida projetada: {viabilidade.margem_liquida_projetada_pct:.1f}%
+Lucro líquido estimado: R$ {viabilidade.lucro_liquido_estimado:,.2f}
+Posse/Chave: {auditoria.posse_ou_chave} | Débitos: {auditoria.responsavel_debitos_anteriores}
+Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
+"""
+    dados_curadoria = await _gerar_estruturado_resiliente(
+        prompt=prompt,
+        schema_cls=ResumoCuradoriaSchema,
+        modelo_principal=settings.gemini_model_fast,
+        modelo_fallback=settings.gemini_model_audit,
+        temperature=0.2,
+    )
+
+    if dados_curadoria is None:
+        score_base = (
+            85
+            if (nivel == "DIAMANTE" and semaforo == "VERDE")
+            else (
+                70
+                if nivel == "DIAMANTE"
+                else (60 if semaforo == "VERDE" else (45 if semaforo == "AMARELO" else 25))
+            )
+        )
+        resumo_exec = (
+            f"Análise por regras (API em instabilidade): ROI líquido estimado de "
+            f"{viabilidade.margem_liquida_projetada_pct:.1f}% a {viabilidade.distancia_vinhedo_km:.1f} km de Vinhedo/SP."
+        )
+        acao_rec = (
+            f"Conferir edital manualmente e respeitar teto de lance de R$ {viabilidade.lance_maximo_recomendado:,.2f} "
+            f"(Diamante até R$ {viabilidade.lance_maximo_diamante:,.2f})."
+        )
+    else:
+        score_base = dados_curadoria.score_qualidade
+        if nivel == "DIAMANTE" and semaforo == "VERDE":
+            score_base = max(score_base, 90)
+        elif nivel == "DIAMANTE":
+            score_base = min(max(score_base, 70), 84)
+        elif semaforo == "VERMELHO":
+            score_base = min(score_base, 35)
+        resumo_exec = dados_curadoria.resumo_executivo
+        acao_rec = dados_curadoria.acao_recomendada
+
+    return CuradoriaFinal(
+        lote_id=lote.gerar_lote_id(),
+        semaforo=semaforo,
+        nivel_oportunidade=nivel,
+        score_qualidade=score_base,
+        resumo_executivo=resumo_exec,
+        acao_recomendada=acao_rec,
+        triagem=triagem,
+        auditoria=auditoria,
+        viabilidade=viabilidade,
+    )
