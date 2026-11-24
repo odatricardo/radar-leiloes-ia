@@ -9,6 +9,14 @@ class Settings(BaseSettings):
     gemini_model_audit: str = "gemini-3.8-flash"
     gemini_fallback_models: str = ""
 
+    # Provedor alternativo opcional (OpenAI ou qualquer endpoint OpenAI-compatible)
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str | None = None
+
+    # Fallback automático por regras quando todas as APIs externas retornam 503/429
+    permitir_fallback_regras: bool = True
+
     database_url: str
     google_maps_api_key: str | None = None
 
