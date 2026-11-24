@@ -84,8 +84,12 @@ with st.sidebar:
         default=list(CATEGORIAS_LABELS.keys()),
         format_func=lambda x: CATEGORIAS_LABELS.get(x, str(x)),
     )
-    raio_max = st.slider("Distância máxima de Vinhedo (km)", min_value=50, max_value=500, value=500, step=25)
-    roi_min_filtro = st.slider("Margem líquida mínima exibida (%)", min_value=15, max_value=60, value=20, step=1)
+    raio_max = st.slider(
+        "Distância máxima de Vinhedo (km)", min_value=50, max_value=500, value=500, step=25
+    )
+    roi_min_filtro = st.slider(
+        "Margem líquida mínima exibida (%)", min_value=15, max_value=60, value=20, step=1
+    )
 
     st.divider()
     st.subheader("2. Motor Gemini Ativo")
@@ -187,7 +191,10 @@ with tab_dash:
                     },
                 )
                 fig_scatter.add_hline(
-                    y=35, line_dash="dash", line_color="#38BDF8", annotation_text="Linha Diamante (35%)"
+                    y=35,
+                    line_dash="dash",
+                    line_color="#38BDF8",
+                    annotation_text="Linha Diamante (35%)",
                 )
                 fig_scatter.update_layout(template="plotly_dark", height=390)
                 st.plotly_chart(fig_scatter, width="stretch")
@@ -208,7 +215,10 @@ with tab_dash:
                     text=resumo_cat["roi_medio"].apply(lambda v: f"{v:.1f}%"),
                     color="categoria_label",
                     title="ROI Líquido Médio por Classe de Ativo (%)",
-                    labels={"categoria_label": "Classe de Ativo", "roi_medio": "ROI Líquido Médio (%)"},
+                    labels={
+                        "categoria_label": "Classe de Ativo",
+                        "roi_medio": "ROI Líquido Médio (%)",
+                    },
                 )
                 fig_bar.update_layout(template="plotly_dark", showlegend=False, height=390)
                 st.plotly_chart(fig_bar, width="stretch")
@@ -273,27 +283,35 @@ with tab_avaliar:
     with st.form("form_novo_lote"):
         col1, col2, col3 = st.columns(3)
         leiloeiro = col1.text_input("Leiloeiro / Portal", placeholder="Ex: Superbid / Sodré Santoro")
-        comitente = col2.text_input("Banco / Financeira Credora", placeholder="Ex: Banco Bradesco / Banco John Deere")
+        comitente = col2.text_input(
+            "Banco / Financeira Credora", placeholder="Ex: Banco Bradesco / Banco John Deere"
+        )
         numero_lote = col3.text_input("Número do Lote", placeholder="Ex: 042")
 
         titulo_lote = st.text_input(
-            "Título do Lote", placeholder="Ex: Toyota Hilux SRX 4x4 2022/2023 Retomada Financiamento"
+            "Título do Lote",
+            placeholder="Ex: Toyota Hilux SRX 4x4 2022/2023 Retomada Financiamento",
         )
         col_c1, col_c2, col_c3, col_c4 = st.columns(4)
         cidade = col_c1.text_input("Cidade do Pátio/Imóvel", placeholder="Ex: Ribeirão Preto")
         uf = col_c2.text_input("UF", value="SP", max_chars=2)
-        lance_atual = col_c3.number_input("Lance Atual / Mínimo (R$)", min_value=1000.0, value=145000.0, step=1000.0)
+        lance_atual = col_c3.number_input(
+            "Lance Atual / Mínimo (R$)", min_value=1000.0, value=145000.0, step=1000.0
+        )
         valor_mercado = col_c4.number_input(
             "Valor de Revenda Conservador (R$)", min_value=1000.0, value=220000.0, step=1000.0
         )
 
         url_lote = st.text_input("URL da Página do Lote", placeholder="https://...")
         url_edital_pdf = st.text_input(
-            "URL Direta do PDF do Edital (Opcional - leitura automática)", placeholder="https://.../edital.pdf"
+            "URL Direta do PDF do Edital (Opcional - leitura automática)",
+            placeholder="https://.../edital.pdf",
         )
         descricao_lote = st.text_area("Descrição do Lote / Observações do Edital", height=130)
 
-        enviado = st.form_submit_button("🚀 Auditar Lote com IA e Calcular Teto de Lance", width="stretch")
+        enviado = st.form_submit_button(
+            "🚀 Auditar Lote com IA e Calcular Teto de Lance", width="stretch"
+        )
 
     if enviado:
         if not leiloeiro or not comitente or not titulo_lote or not cidade:
@@ -328,7 +346,11 @@ with tab_avaliar:
             if erro_execucao:
                 st.error(f"Falha na análise após {duracao:.1f}s: {erro_execucao}")
             elif resposta is None or not resposta.aprovado or resposta.curadoria is None:
-                motivo = resposta.motivo_rejeicao if resposta else "Lote descartado automaticamente na triagem."
+                motivo = (
+                    resposta.motivo_rejeicao
+                    if resposta
+                    else "Lote descartado automaticamente na triagem."
+                )
                 st.warning(f"{motivo} *(Tempo: {duracao:.1f}s)*")
             else:
                 resultado = resposta.curadoria
@@ -341,16 +363,33 @@ with tab_avaliar:
                     f"{resultado.resumo_executivo}\n\n**Ação:** {resultado.acao_recomendada}"
                 )
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Lance Máx. Diamante (≥35%)", formatar_brl(resultado.viabilidade.lance_maximo_diamante))
-                m2.metric("Lance Máx. Base", formatar_brl(resultado.viabilidade.lance_maximo_recomendado))
-                m3.metric("Margem Líquida Real", f"{resultado.viabilidade.margem_liquida_projetada_pct:.1f}%")
-                m4.metric("Lucro Líquido Estimado", formatar_brl(resultado.viabilidade.lucro_liquido_estimado))
+                m1.metric(
+                    "Lance Máx. Diamante (≥35%)",
+                    formatar_brl(resultado.viabilidade.lance_maximo_diamante),
+                )
+                m2.metric(
+                    "Lance Máx. Base", formatar_brl(resultado.viabilidade.lance_maximo_recomendado)
+                )
+                m3.metric(
+                    "Margem Líquida Real",
+                    f"{resultado.viabilidade.margem_liquida_projetada_pct:.1f}%",
+                )
+                m4.metric(
+                    "Lucro Líquido Estimado",
+                    formatar_brl(resultado.viabilidade.lucro_liquido_estimado),
+                )
 
                 with st.expander("Detalhes Jurídicos e Operacionais da Auditoria"):
-                    st.write(f"**Modalidade:** {resultado.triagem.modalidade_identificada or 'Alienação Fiduciária'}")
-                    st.write(f"**Distância de Vinhedo/SP:** {resultado.viabilidade.distancia_vinhedo_km:.1f} km")
+                    st.write(
+                        f"**Modalidade:** {resultado.triagem.modalidade_identificada or 'Alienação Fiduciária'}"
+                    )
+                    st.write(
+                        f"**Distância de Vinhedo/SP:** {resultado.viabilidade.distancia_vinhedo_km:.1f} km"
+                    )
                     st.write(f"**Posse / Chave:** {resultado.auditoria.posse_ou_chave}")
-                    st.write(f"**Responsável por Débitos:** {resultado.auditoria.responsavel_debitos_anteriores}")
+                    st.write(
+                        f"**Responsável por Débitos:** {resultado.auditoria.responsavel_debitos_anteriores}"
+                    )
                     st.write(f"**Resumo das Cláusulas:** {resultado.auditoria.resumo_clausulas}")
                     if resultado.auditoria.alertas_criticos:
                         st.warning("Alertas: " + " | ".join(resultado.auditoria.alertas_criticos))
@@ -359,10 +398,17 @@ with tab_avaliar:
 with tab_simulador:
     st.subheader("Simulador Rápido de Viabilidade Antes do Pregão")
     s1, s2, s3 = st.columns(3)
-    sim_revenda = s1.number_input("Preço de Revenda Conservador (R$)", min_value=10000.0, value=250000.0, step=5000.0)
-    sim_lance = s2.number_input("Seu Lance Pretendido (R$)", min_value=5000.0, value=155000.0, step=2500.0)
+    sim_revenda = s1.number_input(
+        "Preço de Revenda Conservador (R$)", min_value=10000.0, value=250000.0, step=5000.0
+    )
+    sim_lance = s2.number_input(
+        "Seu Lance Pretendido (R$)", min_value=5000.0, value=155000.0, step=2500.0
+    )
     sim_custos = s3.number_input(
-        "Custos Totais (Frete + Pátio + Doc + Contingência) (R$)", min_value=0.0, value=18500.0, step=500.0
+        "Custos Totais (Frete + Pátio + Doc + Contingência) (R$)",
+        min_value=0.0,
+        value=18500.0,
+        step=500.0,
     )
 
     comissao = sim_lance * 0.05
@@ -374,7 +420,14 @@ with tab_simulador:
         go.Waterfall(
             orientation="v",
             measure=["relative", "relative", "relative", "total", "relative", "total"],
-            x=["Lance", "Comissão (5%)", "Custos & Contingência", "Custo Total", "Margem Bruta", "Preço Revenda"],
+            x=[
+                "Lance",
+                "Comissão (5%)",
+                "Custos & Contingência",
+                "Custo Total",
+                "Margem Bruta",
+                "Preço Revenda",
+            ],
             y=[sim_lance, comissao, sim_custos, 0, lucro, 0],
             connector={"line": {"color": "#4B5563"}},
         )
