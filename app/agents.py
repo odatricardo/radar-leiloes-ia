@@ -49,6 +49,7 @@ TRANSIENT_MARKERS = (
 )
 
 ultima_fonte_ia: str = "nao_executado"
+_ultimo_modelo_secundario_usado: str = ""
 
 
 class ResumoCuradoriaSchema(BaseModel):
@@ -89,6 +90,8 @@ async def _chamar_provedor_secundario_json(
     schema_cls: type[SchemaT],
 ) -> SchemaT | None:
     """Consulta provedor OpenAI-compatible quando o Gemini falha por indisponibilidade/cota."""
+    global _ultimo_modelo_secundario_usado
+
     if not settings.openai_api_key:
         logger.info("Provedor secundário não configurado (OPENAI_API_KEY ausente).")
         return None
@@ -97,41 +100,77 @@ async def _chamar_provedor_secundario_json(
     url = f"{base_url}/chat/completions"
     schema_json = json.dumps(schema_cls.model_json_schema(), ensure_ascii=False)
 
-    payload = {
-        "model": settings.openai_model,
-        "temperature": 0.1,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Você é um assistente técnico preciso. Responda exclusivamente com um "
-                    "objeto JSON válido aderente ao schema a seguir, respeitando exatamente os "
-                    "nomes e tipos dos campos:\n"
-                    f"{schema_json}"
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-    }
     headers = {
         "Authorization": f"Bearer {settings.openai_api_key}",
         "Content-Type": "application/json",
     }
+    mensagens = [
+        {
+            "role": "system",
+            "content": (
+                "Você é um assistente técnico preciso. Responda exclusivamente com um "
+                "objeto JSON válido aderente ao schema a seguir, respeitando exatamente os "
+                "nomes e tipos dos campos:\n"
+                f"{schema_json}"
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
 
-    logger.info("Acionando provedor secundário (%s) em %s...", settings.openai_model, base_url)
-    try:
-        async with httpx.AsyncClient(timeout=25.0) as http:
-            resp = await http.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            conteudo = data["choices"][0]["message"]["content"]
-            resultado = schema_cls.model_validate_json(conteudo)
-            logger.info("Provedor secundário (%s) respondeu com sucesso.", settings.openai_model)
-            return resultado
-    except Exception as exc:
-        logger.warning("Falha no provedor secundário (%s): %s", settings.openai_model, exc)
-        return None
+    modelos_tentativa = [settings.openai_model]
+
+    async with httpx.AsyncClient(timeout=25.0) as http:
+        idx = 0
+        while idx < len(modelos_tentativa):
+            modelo_atual = modelos_tentativa[idx]
+            payload = {
+                "model": modelo_atual,
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+                "messages": mensagens,
+            }
+            logger.info("Acionando provedor secundário (%s) em %s...", modelo_atual, base_url)
+            try:
+                resp = await http.post(url, json=payload, headers=headers)
+                if resp.status_code == 404 and idx == 0:
+                    logger.warning(
+                        "Modelo '%s' retornou 404 em %s; buscando modelos ativos...",
+                        modelo_atual,
+                        base_url,
+                    )
+                    try:
+                        models_resp = await http.get(f"{base_url}/models", headers=headers)
+                        models_resp.raise_for_status()
+                        items = models_resp.json().get("data", [])
+                        for item in items:
+                            mid = (item.get("id") or "").strip()
+                            if (
+                                mid
+                                and mid not in modelos_tentativa
+                                and not any(
+                                    b in mid.lower()
+                                    for b in ("whisper", "tts", "guard", "embed")
+                                )
+                            ):
+                                modelos_tentativa.append(mid)
+                                break
+                    except Exception as list_exc:
+                        logger.warning("Falha ao listar modelos em %s: %s", base_url, list_exc)
+                    idx += 1
+                    continue
+
+                resp.raise_for_status()
+                data = resp.json()
+                conteudo = data["choices"][0]["message"]["content"]
+                resultado = schema_cls.model_validate_json(conteudo)
+                _ultimo_modelo_secundario_usado = modelo_atual
+                logger.info("Provedor secundário (%s) respondeu com sucesso.", modelo_atual)
+                return resultado
+            except Exception as exc:
+                logger.warning("Falha no provedor secundário (%s): %s", modelo_atual, exc)
+                idx += 1
+
+    return None
 
 
 async def _gerar_estruturado_resiliente(
@@ -188,7 +227,8 @@ async def _gerar_estruturado_resiliente(
 
     secundario = await _chamar_provedor_secundario_json(prompt, schema_cls)
     if secundario is not None:
-        ultima_fonte_ia = f"provedor_secundario ({settings.openai_model})"
+        modelo_ok = _ultimo_modelo_secundario_usado or settings.openai_model
+        ultima_fonte_ia = f"provedor_secundario ({modelo_ok})"
         return secundario
 
     if settings.permitir_fallback_regras:
@@ -515,55 +555,4 @@ async def agente_4_e_5_curador(
 Você é um gestor de ativos em {settings.base_cidade}/{settings.base_uf}.
 Gere um score de qualidade (0 a 100), um resumo executivo direto (até 3 linhas) e a ação recomendada para o arrematante.
 
-Lote: {lote.titulo_lote} ({lote.cidade}/{lote.uf}, {viabilidade.distancia_vinhedo_km} km)
-Semáforo: {semaforo} | Nível de Oportunidade: {nivel} (Meta Diamante >= {MARGEM_DIAMANTE_PCT:.0f}%)
-Lance atual: R$ {lote.lance_atual:,.2f} | Valor mercado: R$ {lote.valor_mercado_referencia:,.2f}
-Lance máximo recomendado (Meta Base {margem_meta:.0f}%): R$ {viabilidade.lance_maximo_recomendado:,.2f}
-Lance máximo Diamante (>= {MARGEM_DIAMANTE_PCT:.0f}%): R$ {viabilidade.lance_maximo_diamante:,.2f}
-Margem líquida projetada: {viabilidade.margem_liquida_projetada_pct:.1f}%
-Lucro líquido estimado: R$ {viabilidade.lucro_liquido_estimado:,.2f}
-Posse/Chave: {auditoria.posse_ou_chave} | Débitos: {auditoria.responsavel_debitos_anteriores}
-Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
-"""
-    dados_curadoria = await _gerar_estruturado_resiliente(
-        prompt=prompt,
-        schema_cls=ResumoCuradoriaSchema,
-        modelo_principal=settings.gemini_model_fast,
-        modelo_fallback=settings.gemini_model_audit,
-        temperature=0.2,
-    )
-
-    if dados_curadoria is None:
-        score_base = (
-            75
-            if nivel == "DIAMANTE"
-            else (60 if semaforo == "VERDE" else (45 if semaforo == "AMARELO" else 25))
-        )
-        resumo_exec = (
-            f"Análise por regras (API em instabilidade): ROI líquido estimado de "
-            f"{viabilidade.margem_liquida_projetada_pct:.1f}% a {viabilidade.distancia_vinhedo_km:.1f} km de Vinhedo/SP."
-        )
-        acao_rec = (
-            f"Conferir edital manualmente e respeitar teto de lance de R$ {viabilidade.lance_maximo_recomendado:,.2f} "
-            f"(Diamante até R$ {viabilidade.lance_maximo_diamante:,.2f})."
-        )
-    else:
-        score_base = dados_curadoria.score_qualidade
-        if nivel == "DIAMANTE":
-            score_base = max(score_base, 90)
-        elif semaforo == "VERMELHO":
-            score_base = min(score_base, 35)
-        resumo_exec = dados_curadoria.resumo_executivo
-        acao_rec = dados_curadoria.acao_recomendada
-
-    return CuradoriaFinal(
-        lote_id=lote.gerar_lote_id(),
-        semaforo=semaforo,
-        nivel_oportunidade=nivel,
-        score_qualidade=score_base,
-        resumo_executivo=resumo_exec,
-        acao_recomendada=acao_rec,
-        triagem=triagem,
-        auditoria=auditoria,
-        viabilidade=viabilidade,
-    )
+Lote: {lote.titulo_lote} ({lote.cidade}/{lote.uf}, {viabilidade.distancia_vinhedo_
