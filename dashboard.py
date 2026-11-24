@@ -157,7 +157,7 @@ def filtrar_e_ordenar_oportunidades_com_diagnostico(
     exibir_descartados: bool = False,
     categoria_filtro: str = "todas",
 ) -> tuple[pd.DataFrame, dict[str, int], pd.DataFrame]:
-    """Filtra, deduplica, ordena e retorna (df_final, contadores, df_descartados_motivo)."""
+    """Filtra, deduplica, ordena e retorna (df_final, contadores, df_diagnostico)."""
     contadores: dict[str, int] = {
         "total_carregado": 0 if df is None else len(df),
         "apos_status": 0,
@@ -223,16 +223,25 @@ def filtrar_e_ordenar_oportunidades_com_diagnostico(
             axis=1,
         )
         antes_dedup = len(out)
-        out = out.drop_duplicates(subset=["_chave_dedup"], keep="first").drop(columns=["_chave_dedup"])
-        if len(out) < antes_dedup:
-            contadores["deduplicados_removidos"] = antes_dedup - len(out)
+        dedup_df = out.drop_duplicates(subset=["_chave_dedup"], keep="first").drop(
+            columns=["_chave_dedup"]
+        )
+        removidos_idxs = set(out.index) - set(dedup_df.index)
+        if removidos_idxs:
+            out.loc[list(removidos_idxs), "_motivo_filtro"] = "Duplicado por URL/chave"
+            contadores["deduplicados_removidos"] = len(removidos_idxs)
+        out = dedup_df
     contadores["apos_dedup"] = len(out)
 
     if categoria_filtro != "todas" and not out.empty:
         mask_cat = out["categoria"] == categoria_filtro
+        out.loc[~mask_cat & (out["_motivo_filtro"] == ""), "_motivo_filtro"] = (
+            f"Categoria diferente de '{categoria_filtro}'"
+        )
         out = out[mask_cat]
     contadores["apos_categoria"] = len(out)
 
+    motivos_por_idx = out["_motivo_filtro"].to_dict() if "_motivo_filtro" in out.columns else {}
     df_diagnostico = df.copy()
     if not out.empty:
         idxs_mantidos = set(out.index)
@@ -241,6 +250,12 @@ def filtrar_e_ordenar_oportunidades_com_diagnostico(
         )
     else:
         df_diagnostico["_status_exibicao"] = "OCULTADO/FILTRADO"
+
+    df_diagnostico["_motivo_filtro"] = df_diagnostico.index.map(
+        lambda i: "OK"
+        if df_diagnostico.loc[i, "_status_exibicao"] == "EXIBIDO"
+        else motivos_por_idx.get(i, "Filtrado nas etapas anteriores")
+    )
 
     if out.empty:
         return out, contadores, df_diagnostico
@@ -360,6 +375,7 @@ def main() -> None:
                 c
                 for c in (
                     "_status_exibicao",
+                    "_motivo_filtro",
                     "lote_id",
                     "titulo_lote",
                     "categoria",
