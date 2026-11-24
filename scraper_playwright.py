@@ -82,6 +82,11 @@ PALAVRAS_BLOQUEIO = (
     "solda",
     "gerador",
     "motogerador",
+    "entrar ou abrir conta",
+    "abrir conta",
+    "ver todos os eventos",
+    "ver todos os lotes",
+    "minha conta",
 )
 
 INDICADORES_FIDUCIARIA = (
@@ -105,6 +110,8 @@ INDICADORES_FIDUCIARIA = (
 
 PADROES_URL_IGNORADA = (
     "/login",
+    "/signin",
+    "/authorization",
     "/cadastro",
     "/minha-conta",
     "/contato",
@@ -116,6 +123,10 @@ PADROES_URL_IGNORADA = (
     "/privacidade",
     "/ajuda",
     "/faq",
+    "/categorias",
+    "/categoria",
+    "/todos-eventos",
+    "accounts.superbid.net",
     "javascript:",
     "mailto:",
     "tel:",
@@ -274,10 +285,10 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float | None, float | None]
 
 
 def _extrair_cidade_uf(
-    texto: str, padrao_cidade: str = "Campinas", padrao_uf: str = "SP"
+    texto: str, padrao_cidade: str = "Não informada", padrao_uf: str = "XX"
 ) -> tuple[str, str]:
     """
-    Extrai (cidade, uf) a partir de padrões comuns como 'Águas Lindas de Goiás/GO' ou 'Campinas - SP'.
+    Extrai (cidade, uf) a partir de padrões comuns como 'Campinas/SP' ou 'Sorocaba - SP'.
     """
     janelas: list[str] = []
     for kw in (
@@ -319,6 +330,11 @@ def _extrair_cidade_uf(
                     "leilao",
                     "lance",
                     "avaliação",
+                    "industrial",
+                    "máquinas",
+                    "maquinas",
+                    "equipamentos",
+                    "eventos",
                 )
             ):
                 continue
@@ -333,7 +349,9 @@ def _escolher_titulo_card(linhas: list[str], href: str) -> str:
         ln
         for ln in linhas
         if len(ln) >= 6
-        and not ln.lower().startswith(("r$", "lance", "ver lote", "detalhes", "saiba mais"))
+        and not ln.lower().startswith(
+            ("r$", "lance", "ver lote", "detalhes", "saiba mais", "entrar", "ver todos")
+        )
         and not re.fullmatch(r"\d+\s*lotes?", ln.strip().lower())
     ]
     if candidatas:
@@ -382,7 +400,15 @@ def _titulo_parece_generico(titulo: str) -> bool:
         return True
     if re.fullmatch(r"\d+\s*lotes?", t):
         return True
-    if t in {"lote em leilão", "lote em leilao", "ver lote", "detalhes", "saiba mais"}:
+    if t in {
+        "lote em leilão",
+        "lote em leilao",
+        "ver lote",
+        "detalhes",
+        "saiba mais",
+        "entrar ou abrir conta",
+        "ver todos os eventos",
+    }:
         return True
     return False
 
@@ -391,7 +417,7 @@ def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
     if not url_candidata:
         return False
     baixa = url_candidata.lower().strip()
-    if baixa.startswith(PADROES_URL_IGNORADA) or baixa == "#" or baixa.endswith("/#"):
+    if any(p in baixa for p in PADROES_URL_IGNORADA) or baixa == "#" or baixa.endswith("/#"):
         return False
     if baixa.rstrip("/") == url_base.rstrip("/").lower():
         return False
@@ -509,10 +535,14 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
     titulo = _normalizar_texto(bruto.get("titulo_lote"))
     descricao = _normalizar_texto(bruto.get("descricao_lote"))
     comitente = _normalizar_texto(bruto.get("comitente_credor"))
-    combinado = f"{titulo} {descricao} {comitente}"
+    url_lote = _normalizar_texto(bruto.get("url_lote"))
+    combinado = f"{titulo} {descricao} {comitente} {url_lote}"
 
-    if not titulo or not bruto.get("cidade"):
-        return False, "Dados mínimos ausentes (título ou cidade)."
+    if _titulo_parece_generico(bruto.get("titulo_lote", "")):
+        return False, "Título genérico ou de navegação/login/categoria."
+
+    if not titulo or not bruto.get("cidade") or bruto.get("cidade") == "Não informada":
+        return False, "Dados mínimos ausentes (título ou localização)."
 
     for termo in PALAVRAS_BLOQUEIO:
         if termo in combinado:
