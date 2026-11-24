@@ -109,6 +109,7 @@ MODELOS_SECUNDARIOS_BLOQUEADOS = (
     "audio",
     "vision",
     "prompt-guard",
+    "safety",
 )
 
 MODELOS_SECUNDARIOS_PREFERIDOS = (
@@ -117,6 +118,12 @@ MODELOS_SECUNDARIOS_PREFERIDOS = (
     "llama-3.3-70b-versatile",
     "qwen/qwen3-32b",
     "qwen/qwen3.8-27b",
+)
+
+MODELOS_SECUNDARIOS_BAIXA_PRIORIDADE = (
+    "allam",
+    "8b",
+    "7b",
 )
 
 ultima_fonte_ia: str = "nao_executado"
@@ -163,6 +170,47 @@ def _modelo_secundario_valido(modelo_id: str) -> bool:
     return not any(b in mid for b in MODELOS_SECUNDARIOS_BLOQUEADOS)
 
 
+def _prioridade_modelo_secundario(modelo_id: str) -> tuple[int, str]:
+    mid = (modelo_id or "").strip().lower()
+    if mid in MODELOS_SECUNDARIOS_PREFERIDOS:
+        return (0, str(MODELOS_SECUNDARIOS_PREFERIDOS.index(mid)))
+    if "gpt-oss" in mid and "120b" in mid:
+        return (1, mid)
+    if "gpt-oss" in mid:
+        return (2, mid)
+    if "llama-3.3" in mid or "70b" in mid:
+        return (3, mid)
+    if any(b in mid for b in MODELOS_SECUNDARIOS_BAIXA_PRIORIDADE):
+        return (9, mid)
+    return (5, mid)
+
+
+def _normalizar_payload_schema(raw_content: str, schema_cls: type[SchemaT]) -> str:
+    """Corrige saídas comuns de modelos menores (ex.: 'categoria': 'null' ou confiança nula)."""
+    try:
+        parsed = json.loads(raw_content)
+    except Exception:
+        return raw_content
+
+    if not isinstance(parsed, dict):
+        return raw_content
+
+    if "categoria" in parsed and parsed["categoria"] in ("null", "None", "none", ""):
+        parsed["categoria"] = None
+
+    if schema_cls.__name__ == "TriagemResultado":
+        conf = parsed.get("confianca_recuperado_financiamento")
+        if conf is None or isinstance(conf, bool):
+            parsed["confianca_recuperado_financiamento"] = 0
+        elif isinstance(conf, str):
+            try:
+                parsed["confianca_recuperado_financiamento"] = max(0, min(100, int(float(conf))))
+            except ValueError:
+                parsed["confianca_recuperado_financiamento"] = 0
+
+    return json.dumps(parsed, ensure_ascii=False)
+
+
 async def _chamar_provedor_secundario_json(
     prompt: str,
     schema_cls: type[SchemaT],
@@ -189,7 +237,7 @@ async def _chamar_provedor_secundario_json(
             "content": (
                 "Você é um assistente técnico preciso. Responda exclusivamente com um "
                 "objeto JSON válido aderente ao schema a seguir, preenchendo TODOS os campos "
-                "obrigatórios com tipos exatos:\n"
+                "obrigatórios com tipos exatos (use JSON null real, nunca a string 'null'):\n"
                 f"{schema_json}"
             ),
         },
@@ -230,10 +278,18 @@ async def _chamar_provedor_secundario_json(
                         models_resp = await http.get(f"{base_url}/models", headers=headers)
                         models_resp.raise_for_status()
                         items = models_resp.json().get("data", [])
-                        for item in items:
-                            mid = (item.get("id") or "").strip()
-                            if _modelo_secundario_valido(mid) and mid not in modelos_tentativa:
-                                modelos_tentativa.insert(idx + 1, mid)
+                        descobertos = [
+                            (item.get("id") or "").strip()
+                            for item in items
+                            if _modelo_secundario_valido((item.get("id") or "").strip())
+                        ]
+                        descobertos.sort(key=_prioridade_modelo_secundario)
+                        restante_atual = modelos_tentativa[idx + 1 :]
+                        combinados: list[str] = []
+                        for m_id in descobertos + restante_atual:
+                            if m_id and m_id != modelo_atual and m_id not in combinados:
+                                combinados.append(m_id)
+                        modelos_tentativa = modelos_tentativa[: idx + 1] + combinados
                     except Exception as list_exc:
                         logger.warning("Falha ao listar modelos em %s: %s", base_url, list_exc)
                     idx += 1
@@ -242,7 +298,8 @@ async def _chamar_provedor_secundario_json(
                 resp.raise_for_status()
                 data = resp.json()
                 conteudo = data["choices"][0]["message"]["content"]
-                resultado = schema_cls.model_validate_json(conteudo)
+                conteudo_limpo = _normalizar_payload_schema(conteudo, schema_cls)
+                resultado = schema_cls.model_validate_json(conteudo_limpo)
                 _ultimo_modelo_secundario_usado = modelo_atual
                 logger.info("Provedor secundário (%s) respondeu com sucesso.", modelo_atual)
                 return resultado
@@ -662,68 +719,3 @@ async def agente_4_e_5_curador(
         semaforo = "VERDE"
         nivel = "PADRAO"
     else:
-        semaforo = "AMARELO"
-        nivel = "ATENCAO"
-
-    prompt = f"""
-Você é um gestor de ativos em {settings.base_cidade}/{settings.base_uf}.
-Gere um score de qualidade (0 a 100), um resumo executivo direto (até 3 linhas) e a ação recomendada para o arrematante.
-
-Lote: {lote.titulo_lote} ({lote.cidade}/{lote.uf}, {viabilidade.distancia_vinhedo_km} km)
-Semáforo: {semaforo} | Nível de Oportunidade: {nivel} (Meta Diamante >= {MARGEM_DIAMANTE_PCT:.0f}%)
-Lance atual: R$ {lote.lance_atual:,.2f} | Valor mercado: R$ {lote.valor_mercado_referencia:,.2f}
-Lance máximo recomendado (Meta Base {margem_meta:.0f}%): R$ {viabilidade.lance_maximo_recomendado:,.2f}
-Lance máximo Diamante (>= {MARGEM_DIAMANTE_PCT:.0f}%): R$ {viabilidade.lance_maximo_diamante:,.2f}
-Margem líquida projetada: {viabilidade.margem_liquida_projetada_pct:.1f}%
-Lucro líquido estimado: R$ {viabilidade.lucro_liquido_estimado:,.2f}
-Posse/Chave: {auditoria.posse_ou_chave} | Débitos: {auditoria.responsavel_debitos_anteriores}
-Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
-"""
-    dados_curadoria = await _gerar_estruturado_resiliente(
-        prompt=prompt,
-        schema_cls=ResumoCuradoriaSchema,
-        modelo_principal=settings.gemini_model_fast,
-        modelo_fallback=settings.gemini_model_audit,
-        temperature=0.2,
-    )
-
-    if dados_curadoria is None:
-        score_base = (
-            85
-            if (nivel == "DIAMANTE" and semaforo == "VERDE")
-            else (
-                70
-                if nivel == "DIAMANTE"
-                else (60 if semaforo == "VERDE" else (45 if semaforo == "AMARELO" else 25))
-            )
-        )
-        resumo_exec = (
-            f"Análise por regras (API em instabilidade): ROI líquido estimado de "
-            f"{viabilidade.margem_liquida_projetada_pct:.1f}% a {viabilidade.distancia_vinhedo_km:.1f} km de Vinhedo/SP."
-        )
-        acao_rec = (
-            f"Conferir edital manualmente e respeitar teto de lance de R$ {viabilidade.lance_maximo_recomendado:,.2f} "
-            f"(Diamante até R$ {viabilidade.lance_maximo_diamante:,.2f})."
-        )
-    else:
-        score_base = dados_curadoria.score_qualidade
-        if nivel == "DIAMANTE" and semaforo == "VERDE":
-            score_base = max(score_base, 90)
-        elif nivel == "DIAMANTE":
-            score_base = min(max(score_base, 70), 84)
-        elif semaforo == "VERMELHO":
-            score_base = min(score_base, 35)
-        resumo_exec = dados_curadoria.resumo_executivo
-        acao_rec = dados_curadoria.acao_recomendada
-
-    return CuradoriaFinal(
-        lote_id=lote.gerar_lote_id(),
-        semaforo=semaforo,
-        nivel_oportunidade=nivel,
-        score_qualidade=score_base,
-        resumo_executivo=resumo_exec,
-        acao_recomendada=acao_rec,
-        triagem=triagem,
-        auditoria=auditoria,
-        viabilidade=viabilidade,
-    )
