@@ -26,13 +26,17 @@ TERMOS_FORA_EXIBICAO = (
     "moto ",
     "motocicleta",
     "biz ",
+    "honda/biz",
     "sucata",
     "irrecuperável",
     "irrecuperavel",
     "judicial online",
+    "leiloesjudiciais.com.br",
     "execução fiscal",
     "execucao fiscal",
     "trabalhista",
+    "sem título",
+    "sem titulo",
 )
 
 PESO_NIVEL = {
@@ -92,7 +96,6 @@ def _normalizar_dataframe(raw_itens: Any) -> pd.DataFrame:
 
     df = pd.DataFrame(registros)
 
-    # Garante colunas numéricas essenciais
     for col_num, padrao in (
         ("score_qualidade", 0.0),
         ("distancia_vinhedo_km", math.nan),
@@ -110,7 +113,6 @@ def _normalizar_dataframe(raw_itens: Any) -> pd.DataFrame:
         else:
             df[col_num] = padrao
 
-    # Calcula margem líquida projetada se não vier explícita
     if df["margem_liquida_projetada_pct"].eq(0.0).all():
         mascara_val = (df["valor_mercado_referencia"] > 0) & (df["lance_atual"] > 0)
         df.loc[mascara_val, "margem_liquida_projetada_pct"] = (
@@ -125,7 +127,7 @@ def _normalizar_dataframe(raw_itens: Any) -> pd.DataFrame:
         ("nivel_oportunidade", "PADRAO"),
         ("semaforo", "AMARELO"),
         ("categoria", "nao_informado"),
-        ("titulo_lote", "Sem título"),
+        ("titulo_lote", ""),
         ("descricao_lote", ""),
         ("cidade", ""),
         ("uf", ""),
@@ -141,7 +143,6 @@ def _normalizar_dataframe(raw_itens: Any) -> pd.DataFrame:
     df["semaforo"] = df["semaforo"].replace("", "AMARELO").str.upper()
     df["categoria"] = df["categoria"].replace("", "nao_informado").str.lower()
 
-    # Corrige incoerência antiga de DIAMANTE + VERMELHO
     mascara_incoerente = (df["nivel_oportunidade"] == "DIAMANTE") & (df["semaforo"] == "VERMELHO")
     df.loc[mascara_incoerente, "nivel_oportunidade"] = "DESCARTADO"
 
@@ -164,11 +165,14 @@ def filtrar_e_ordenar_oportunidades(
             (out["nivel_oportunidade"] != "DESCARTADO") & (out["semaforo"] != "VERMELHO")
         ]
 
+    # Exige título mínimo real
+    out = out[out["titulo_lote"].str.len() >= 5]
+
     # Filtra distância acima do raio permitido
     dist_num = pd.to_numeric(out["distancia_vinhedo_km"], errors="coerce")
     out = out[dist_num.isna() | (dist_num <= raio_max_km)]
 
-    # Filtra termos fora do escopo (motos, sucatas, judicial)
+    # Filtra termos fora do escopo (motos, sucatas, judicial, sem título)
     cols_texto = [
         c for c in ("titulo_lote", "descricao_lote", "url_lote", "leiloeiro") if c in out.columns
     ]
@@ -179,7 +183,7 @@ def filtrar_e_ordenar_oportunidades(
         )
         out = out[~mascara_bloqueio]
 
-    # Remove títulos puramente genéricos sem descrição real (ex.: "1 Lotes" sem detalhamento)
+    # Remove títulos puramente genéricos (ex.: "1 Lotes")
     mascara_generico = out["titulo_lote"].str.lower().apply(
         lambda t: bool(re.fullmatch(r"\d+\s*lotes?", t.strip()))
     )
@@ -286,7 +290,6 @@ def main() -> None:
     if categoria_filtro != "todas" and not df_filtrado.empty:
         df_filtrado = df_filtrado[df_filtrado["categoria"] == categoria_filtro].reset_index(drop=True)
 
-    # KPIs principais
     col1, col2, col3, col4 = st.columns(4)
     total_exibidos = len(df_filtrado)
     total_diamante = (
@@ -310,7 +313,6 @@ def main() -> None:
 
     st.divider()
 
-    # Gráficos
     g_col1, g_col2 = st.columns(2)
     with g_col1:
         st.subheader("Margem Líquida (%) vs. Distância")
@@ -369,7 +371,6 @@ def main() -> None:
 
     st.divider()
 
-    # Ranking de Lotes Aprovados
     st.subheader("Ranking de Lotes Aprovados (Ordenado por Prioridade e Score)")
     if df_filtrado.empty:
         st.info(
@@ -407,7 +408,6 @@ def main() -> None:
             },
         )
 
-    # Avaliação manual rápida
     with st.expander("Avaliar Lote Manualmente"):
         with st.form("form_avaliar_lote"):
             c1, c2, c3 = st.columns(3)
