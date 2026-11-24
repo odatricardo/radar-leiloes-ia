@@ -1,10 +1,14 @@
 import asyncio
+import json
 import math
 import random
+from typing import TypeVar
+
 import httpx
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+
 from app.config import settings
 from app.finance import MARGEM_DIAMANTE_PCT, calcular_viabilidade, obter_margem_minima
 from app.models import (
@@ -16,6 +20,8 @@ from app.models import (
     TriagemResultado,
 )
 from app.pdf_reader import extrair_texto_pdf_url
+
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 client = genai.Client(api_key=settings.gemini_api_key)
 
@@ -74,13 +80,68 @@ def listar_modelos_disponiveis() -> list[str]:
     return modelos_ativos or settings.obter_cadeia_modelos()
 
 
-async def _gerar_com_retry(
-    contents: str,
-    config: types.GenerateContentConfig,
+async def _chamar_provedor_secundario_json(
+    prompt: str,
+    schema_cls: type[SchemaT],
+) -> SchemaT | None:
+    """Fallback opcional para provedor OpenAI-compatible quando o Gemini retorna 503/429."""
+    if not settings.openai_api_key:
+        return None
+
+    base_url = (settings.openai_base_url or "https://api.openai.com/v1").rstrip("/")
+    url = f"{base_url}/chat/completions"
+    schema_json = json.dumps(schema_cls.model_json_schema(), ensure_ascii=False)
+
+    payload = {
+        "model": settings.openai_model,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Responda exclusivamente com um objeto JSON válido aderente ao schema a seguir:\n"
+                    f"{schema_json}"
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.openai_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            conteudo = data["choices"][0]["message"]["content"]
+            return schema_cls.model_validate_json(conteudo)
+    except Exception:
+        return None
+
+
+async def _gerar_estruturado_resiliente(
+    prompt: str,
+    schema_cls: type[SchemaT],
     modelo_principal: str,
     modelo_fallback: str | None = None,
+    temperature: float = 0.1,
     max_tentativas: int = 2,
-):
+) -> SchemaT | None:
+    """
+    1. Tenta Gemini com retry curto em erros transitórios (503/429).
+    2. Se falhar, tenta provedor secundário configurado (se houver).
+    3. Se todos falharem por indisponibilidade/cota, retorna None para acionar fallback por regras.
+    """
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=schema_cls,
+        temperature=temperature,
+    )
+
     modelos = settings.obter_cadeia_modelos(modelo_principal)
     if modelo_fallback:
         nome_fb = modelo_fallback.replace("models/", "").strip()
@@ -88,16 +149,17 @@ async def _gerar_com_retry(
             modelos.insert(1, nome_fb)
 
     ultimo_erro: Exception | None = None
-    erro_transitorio_principal: Exception | None = None
+    erro_transitorio: Exception | None = None
 
     for idx_modelo, modelo in enumerate(modelos):
         for tentativa in range(max_tentativas):
             try:
-                return await client.aio.models.generate_content(
+                resp = await client.aio.models.generate_content(
                     model=modelo,
-                    contents=contents,
+                    contents=prompt,
                     config=config,
                 )
+                return schema_cls.model_validate_json(resp.text)
             except Exception as exc:
                 ultimo_erro = exc
                 msg = str(exc)
@@ -105,18 +167,25 @@ async def _gerar_com_retry(
                 eh_transitorio = (not eh_erro_fixo) and any(
                     marcador in msg for marcador in TRANSIENT_MARKERS
                 )
-                if eh_transitorio and erro_transitorio_principal is None:
-                    erro_transitorio_principal = exc
+                if eh_transitorio and erro_transitorio is None:
+                    erro_transitorio = exc
                 if eh_erro_fixo or not eh_transitorio or tentativa == max_tentativas - 1:
                     break
-                espera = (1.0 * (tentativa + 1)) + random.uniform(0.1, 0.4)
+                espera = (0.8 * (tentativa + 1)) + random.uniform(0.1, 0.35)
                 await asyncio.sleep(espera)
 
-        if idx_modelo == 0 and erro_transitorio_principal is not None:
+        if idx_modelo == 0 and erro_transitorio is not None:
             break
 
-    assert (erro_transitorio_principal or ultimo_erro) is not None
-    raise erro_transitorio_principal or ultimo_erro
+    # Tenta provedor secundário antes de desistir da LLM
+    secundario = await _chamar_provedor_secundario_json(prompt, schema_cls)
+    if secundario is not None:
+        return secundario
+
+    if settings.permitir_fallback_regras:
+        return None
+
+    raise erro_transitorio or ultimo_erro or RuntimeError("Falha ao consultar modelo de IA.")
 
 
 def _haversine_rodoviario_estimado(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -168,7 +237,7 @@ async def resolver_distancia_km(lote: LoteEntrada) -> float:
                 "format": "json",
                 "limit": 1,
             }
-            headers = {"User-Agent": "RadarLeiloesIA/1.2"}
+            headers = {"User-Agent": "RadarLeiloesIA/1.3"}
             nom_resp = await http.get(nom_url, params=nom_params, headers=headers)
             resultados = nom_resp.json()
             if resultados:
@@ -190,6 +259,77 @@ async def preparar_texto_edital(lote: LoteEntrada) -> str:
     return lote.texto_edital or "Edital completo não anexado ou PDF indisponível; analisar descrição do lote com rigor."
 
 
+def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResultado:
+    texto = f"{lote.titulo_lote} {lote.descricao_lote} {lote.comitente_credor}".lower()
+    if distancia_km > settings.raio_maximo_km:
+        return TriagemResultado(
+            aprovado=False,
+            categoria=None,
+            modalidade_identificada=None,
+            motivo_descarte=f"Distância ({distancia_km:.1f} km) acima do limite de {settings.raio_maximo_km:.0f} km.",
+        )
+    if any(p in texto for p in ("sucata", "irrecuperável", "irrecuperavel", "moto ", "motocicleta")):
+        return TriagemResultado(
+            aprovado=False,
+            categoria=None,
+            modalidade_identificada=None,
+            motivo_descarte="Categoria ou condição fora do escopo (sucata ou motocicleta).",
+        )
+
+    categoria = "caminhonete_4x4"
+    if any(p in texto for p in ("caminhão", "caminhao", "cavalo mecânico", "carreta")):
+        categoria = "caminhao"
+    elif any(p in texto for p in ("trator", "colheitadeira", "pulverizador", "máquina agrícola", "maquina agricola")):
+        categoria = "maquina_agricola"
+    elif any(p in texto for p in ("apartamento", "casa ", "terreno", "galpão", "galpao", "imóvel", "imovel", "matrícula")):
+        categoria = "imovel"
+
+    return TriagemResultado(
+        aprovado=True,
+        categoria=categoria,
+        modalidade_identificada="Alienação Fiduciária / Retomada (fallback regras)",
+        motivo_descarte=None,
+    )
+
+
+def _auditoria_por_regras(lote: LoteEntrada, texto_edital: str) -> AuditoriaEditalResultado:
+    base_txt = f"{lote.titulo_lote} {lote.descricao_lote} {lote.comitente_credor} {texto_edital}".lower()
+    fiduciaria_ok = any(
+        k in base_txt
+        for k in (
+            "alienação fiduciária",
+            "alienacao fiduciaria",
+            "recuperado de financiamento",
+            "retomada",
+            "banco ",
+            "financeira",
+            "bv ",
+            "santander",
+            "bradesco",
+            "itaú",
+            "itau",
+        )
+    )
+    sinistro_grave = any(k in base_txt for k in ("sinistro grande monta", "sinistro grave", "enchente", "incêndio", "incendio"))
+    restricao = any(k in base_txt for k in ("bloqueio judicial", "indisponibilidade", "ação judicial", "acao judicial"))
+
+    posse = "com_chave" if "com chave" in base_txt else ("desocupado" if "desocupado" in base_txt else "nao_informado")
+    debitos = "credor_vendedor" if any(k in base_txt for k in ("débitos quitados", "debitos quitados", "por conta do comitente")) else "misto_ou_incerto"
+
+    return AuditoriaEditalResultado(
+        recuperado_financiamento_confirmado=fiduciaria_ok,
+        posse_ou_chave=posse,
+        responsavel_debitos_anteriores=debitos,
+        valor_debitos_repassados_estimado=0.0,
+        comissao_leiloeiro_pct=5.0,
+        taxa_administrativa_estimada=1500.0,
+        sinistro_ou_avaria_grave=sinistro_grave,
+        restricao_documental_ou_judicial=restricao,
+        resumo_clausulas="Avaliação preliminar gerada por regras devido a instabilidade temporária da API de IA.",
+        alertas_criticos=["API de IA indisponível no momento: validar cláusulas do edital manualmente antes do lance."],
+    )
+
+
 async def agente_2_triagem(lote: LoteEntrada, distancia_km: float) -> TriagemResultado:
     prompt = f"""
 Você é um especialista sênior em leilões brasileiros. Avalie se o lote atende aos critérios estritos:
@@ -206,17 +346,14 @@ Título: {lote.titulo_lote}
 Descrição: {lote.descricao_lote}
 Cidade/UF: {lote.cidade}/{lote.uf}
 """
-    response = await _gerar_com_retry(
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=TriagemResultado,
-            temperature=0.1,
-        ),
+    res = await _gerar_estruturado_resiliente(
+        prompt=prompt,
+        schema_cls=TriagemResultado,
         modelo_principal=settings.gemini_model_fast,
         modelo_fallback=settings.gemini_model_audit,
+        temperature=0.1,
     )
-    return TriagemResultado.model_validate_json(response.text)
+    return res if res is not None else _triagem_por_regras(lote, distancia_km)
 
 
 async def agente_3_auditor_edital(lote: LoteEntrada, categoria: str) -> AuditoriaEditalResultado:
@@ -236,17 +373,14 @@ Extraia com rigor:
 4. Comissão do leiloeiro (%) e taxa administrativa/pátio (R$).
 5. Sinistro/avaria grave ou restrição documental/judicial e alertas críticos.
 """
-    response = await _gerar_com_retry(
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=AuditoriaEditalResultado,
-            temperature=0.1,
-        ),
+    res = await _gerar_estruturado_resiliente(
+        prompt=prompt,
+        schema_cls=AuditoriaEditalResultado,
         modelo_principal=settings.gemini_model_audit,
         modelo_fallback=settings.gemini_model_fast,
+        temperature=0.1,
     )
-    return AuditoriaEditalResultado.model_validate_json(response.text)
+    return res if res is not None else _auditoria_por_regras(lote, conteudo_edital)
 
 
 async def agente_4_e_5_curador(
@@ -311,31 +445,40 @@ Lucro líquido estimado: R$ {viabilidade.lucro_liquido_estimado:,.2f}
 Posse/Chave: {auditoria.posse_ou_chave} | Débitos: {auditoria.responsavel_debitos_anteriores}
 Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
 """
-    resumo_resp = await _gerar_com_retry(
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ResumoCuradoriaSchema,
-            temperature=0.2,
-        ),
+    dados_curadoria = await _gerar_estruturado_resiliente(
+        prompt=prompt,
+        schema_cls=ResumoCuradoriaSchema,
         modelo_principal=settings.gemini_model_fast,
         modelo_fallback=settings.gemini_model_audit,
+        temperature=0.2,
     )
-    dados_curadoria = ResumoCuradoriaSchema.model_validate_json(resumo_resp.text)
 
-    score_base = dados_curadoria.score_qualidade
-    if nivel == "DIAMANTE":
-        score_base = max(score_base, 90)
-    elif semaforo == "VERMELHO":
-        score_base = min(score_base, 35)
+    if dados_curadoria is None:
+        score_base = 75 if nivel == "DIAMANTE" else (60 if semaforo == "VERDE" else (45 if semaforo == "AMARELO" else 25))
+        resumo_exec = (
+            f"Análise por regras (API em instabilidade): ROI líquido estimado de "
+            f"{viabilidade.margem_liquida_projetada_pct:.1f}% a {viabilidade.distancia_vinhedo_km:.1f} km de Vinhedo/SP."
+        )
+        acao_rec = (
+            f"Conferir edital manualmente e respeitar teto de lance de R$ {viabilidade.lance_maximo_recomendado:,.2f} "
+            f"(Diamante até R$ {viabilidade.lance_maximo_diamante:,.2f})."
+        )
+    else:
+        score_base = dados_curadoria.score_qualidade
+        if nivel == "DIAMANTE":
+            score_base = max(score_base, 90)
+        elif semaforo == "VERMELHO":
+            score_base = min(score_base, 35)
+        resumo_exec = dados_curadoria.resumo_executivo
+        acao_rec = dados_curadoria.acao_recomendada
 
     return CuradoriaFinal(
         lote_id=lote.gerar_lote_id(),
         semaforo=semaforo,
         nivel_oportunidade=nivel,
         score_qualidade=score_base,
-        resumo_executivo=dados_curadoria.resumo_executivo,
-        acao_recomendada=dados_curadoria.acao_recomendada,
+        resumo_executivo=resumo_exec,
+        acao_recomendada=acao_rec,
         triagem=triagem,
         auditoria=auditoria,
         viabilidade=viabilidade,
