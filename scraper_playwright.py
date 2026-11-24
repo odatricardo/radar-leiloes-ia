@@ -6,7 +6,7 @@ import re
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-from playwright.async_api import async_playwright
+from playwright.async_api import Page, async_playwright
 
 from app.agents import resolver_distancia_km
 from app.config import settings
@@ -18,6 +18,36 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger("radar_scraper")
+
+UFS_BRASIL = {
+    "AC",
+    "AL",
+    "AP",
+    "AM",
+    "BA",
+    "CE",
+    "DF",
+    "ES",
+    "GO",
+    "MA",
+    "MT",
+    "MS",
+    "MG",
+    "PA",
+    "PB",
+    "PR",
+    "PE",
+    "PI",
+    "RJ",
+    "RN",
+    "RS",
+    "RO",
+    "RR",
+    "SC",
+    "SP",
+    "SE",
+    "TO",
+}
 
 PALAVRAS_BLOQUEIO = (
     "sucata",
@@ -118,17 +148,121 @@ def _normalizar_texto(texto: str | None) -> str:
     return " ".join(texto.lower().split())
 
 
+def _parse_moeda_brl(bruto: str) -> float | None:
+    limpo = bruto.replace("R$", "").replace("\xa0", " ").strip()
+    if "," in limpo:
+        limpo = limpo.replace(".", "").replace(",", ".")
+    else:
+        # Se tiver apenas ponto como separador de milhar (ex.: 28.000)
+        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", limpo):
+            limpo = limpo.replace(".", "")
+    try:
+        val = float(limpo)
+        return val if val >= 500.0 else None
+    except ValueError:
+        return None
+
+
 def _extrair_valores_brl(texto: str) -> list[float]:
-    matches = re.findall(r"R\$\s*([\d\.]+,\d{2})", texto)
+    matches = re.findall(r"R\$\s*[\d\.]+(?:,\d{2})?", texto)
     valores: list[float] = []
     for bruto in matches:
-        try:
-            numero = float(bruto.replace(".", "").replace(",", "."))
-            if numero >= 1000.0:
-                valores.append(numero)
-        except ValueError:
-            continue
+        val = _parse_moeda_brl(bruto)
+        if val is not None:
+            valores.append(val)
     return valores
+
+
+def _extrair_valores_com_rotulo(texto: str) -> tuple[float | None, float | None]:
+    """
+    Retorna (lance_atual_ou_minimo, valor_avaliacao_ou_mercado) quando identificados no texto.
+    """
+    lance: float | None = None
+    avaliacao: float | None = None
+
+    padroes_lance = (
+        r"(?:lance\s*(?:m[ií]nimo(?:\s*atual)?|inicial|atual))[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:valor\s*(?:do\s*lance|inicial|m[ií]nimo))[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
+    )
+    for pat in padroes_lance:
+        m = re.search(pat, texto, flags=re.IGNORECASE)
+        if m:
+            lance = _parse_moeda_brl(m.group(1))
+            if lance is not None:
+                break
+
+    padroes_avaliacao = (
+        r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
+    )
+    for pat in padroes_avaliacao:
+        m = re.search(pat, texto, flags=re.IGNORECASE)
+        if m:
+            avaliacao = _parse_moeda_brl(m.group(1))
+            if avaliacao is not None:
+                break
+
+    todos = _extrair_valores_brl(texto)
+    if lance is None and todos:
+        lance = min(todos)
+    if avaliacao is None and todos:
+        maior = max(todos)
+        if lance is not None and maior > lance:
+            avaliacao = maior
+        elif lance is not None:
+            avaliacao = round(lance * 1.45, 2)
+
+    if lance is not None and avaliacao is None:
+        avaliacao = round(lance * 1.45, 2)
+    if avaliacao is not None and lance is None:
+        lance = round(avaliacao * 0.60, 2)
+
+    return lance, avaliacao
+
+
+def _extrair_cidade_uf(texto: str, padrao_cidade: str = "Campinas", padrao_uf: str = "SP") -> tuple[str, str]:
+    """
+    Extrai (cidade, uf) a partir de padrões comuns como 'Águas Lindas de Goiás/GO' ou 'Campinas - SP'.
+    """
+    # Evita capturar links/menus de topo procurando primeiro perto de palavras-chave de localização
+    janelas: list[str] = []
+    for kw in ("avaliação", "lance mínimo", "depositário", "comarca", "localização", "cidade", "endereço"):
+        for match in re.finditer(re.escape(kw), texto, flags=re.IGNORECASE):
+            inicio = max(0, match.start() - 120)
+            fim = min(len(texto), match.end() + 180)
+            janelas.append(texto[inicio:fim])
+    janelas.append(texto[:4000])
+
+    regex_loc = re.compile(
+        r"([A-ZÀ-Ú][A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*(?:/|-|–)\s*([A-Z]{2})\b"
+    )
+
+    for trecho in janelas:
+        for m in regex_loc.finditer(trecho):
+            cidade_cand = " ".join(m.group(1).strip(" ,;-–/").split())
+            uf_cand = m.group(2).strip().upper()
+            if uf_cand not in UFS_BRASIL:
+                continue
+            baixa = cidade_cand.lower()
+            if any(
+                ruido in baixa
+                for ruido in (
+                    "http",
+                    "www",
+                    "lote",
+                    "edital",
+                    "processo",
+                    "banco",
+                    "leilão",
+                    "leilao",
+                    "lance",
+                    "avaliação",
+                )
+            ):
+                continue
+            if len(cidade_cand) >= 3:
+                return cidade_cand[:80], uf_cand
+
+    return padrao_cidade, padrao_uf
 
 
 def _escolher_titulo_card(linhas: list[str], href: str) -> str:
@@ -140,7 +274,6 @@ def _escolher_titulo_card(linhas: list[str], href: str) -> str:
         and not re.fullmatch(r"\d+\s*lotes?", ln.strip().lower())
     ]
     if candidatas:
-        # Prioriza linha com nome de veículo, máquina, imóvel ou marca conhecida
         for ln in candidatas:
             if any(
                 k in ln.lower()
@@ -177,7 +310,18 @@ def _escolher_titulo_card(linhas: list[str], href: str) -> str:
 
     parsed = urlparse(href)
     slug = parsed.path.rstrip("/").split("/")[-1].replace("-", " ").replace("_", " ").strip()
-    return (slug[:180] if slug else "Lote em Leilão")
+    return slug[:180] if slug else "Lote em Leilão"
+
+
+def _titulo_parece_generico(titulo: str) -> bool:
+    t = (titulo or "").strip().lower()
+    if not t or len(t) < 6:
+        return True
+    if re.fullmatch(r"\d+\s*lotes?", t):
+        return True
+    if t in {"lote em leilão", "lote em leilao", "ver lote", "detalhes", "saiba mais"}:
+        return True
+    return False
 
 
 def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
@@ -193,10 +337,71 @@ def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
     query = (parsed.query or "").lower()
     if any(p in caminho or p in query for p in PADROES_URL_LOTE):
         return True
-    # Aceita caminhos profundos com ID numérico no final (ex.: /leilao/12345 ou /123456)
     if re.search(r"/\d{3,}/?$", caminho):
         return True
     return False
+
+
+async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[str, Any]:
+    """Abre a url_lote para extrair descrição, cidade/UF e valores reais quando disponível."""
+    url_lote = item.get("url_lote")
+    if not url_lote or not str(url_lote).startswith(("http://", "https://")):
+        return item
+
+    try:
+        await page.goto(url_lote, wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_timeout(1800)
+
+        texto_pagina = ""
+        seletores_desc = (
+            "[class*='descricao'], [class*='description'], [id*='descricao'], "
+            "[class*='detalhe-lote'], [class*='lot-detail'], main"
+        )
+        loc_desc = page.locator(seletores_desc).first
+        if await loc_desc.count():
+            texto_pagina = ((await loc_desc.inner_text()) or "").strip()
+
+        if len(texto_pagina) < 40:
+            texto_pagina = ((await page.locator("body").inner_text()) or "").strip()
+
+        if not texto_pagina:
+            return item
+
+        linhas_pag = [ln.strip() for ln in texto_pagina.splitlines() if len(ln.strip()) >= 4]
+        if _titulo_parece_generico(item.get("titulo_lote", "")) and linhas_pag:
+            for ln in linhas_pag:
+                if not _titulo_parece_generico(ln) and not ln.lower().startswith(
+                    ("home", "leilões", "leiloes", "entrar", "cadastrar", "r$")
+                ):
+                    item["titulo_lote"] = ln[:180]
+                    break
+
+        cidade_real, uf_real = _extrair_cidade_uf(texto_pagina)
+        item["cidade"] = cidade_real
+        item["uf"] = uf_real
+
+        lance_real, avaliacao_real = _extrair_valores_com_rotulo(texto_pagina)
+        if lance_real is not None:
+            item["lance_atual"] = lance_real
+        if avaliacao_real is not None:
+            item["valor_mercado_referencia"] = avaliacao_real
+
+        # Procura link de PDF/edital caso exista na página do lote
+        pdf_link = page.locator("a[href*='.pdf'], a[href*='edital']").first
+        if await pdf_link.count():
+            href_pdf = await pdf_link.get_attribute("href")
+            if href_pdf:
+                item["url_edital_pdf"] = urljoin(url_lote, href_pdf.strip())
+
+        descricao_antiga = item.get("descricao_lote", "")
+        texto_limpo = " ".join(texto_pagina.split())
+        item["descricao_lote"] = (
+            f"{descricao_antiga}\n\n[DETALHES DA PÁGINA DO LOTE]\n{texto_limpo[:2500]}".strip()[:3500]
+        )
+    except Exception as exc:
+        logger.debug("Não foi possível enriquecer página do lote %s: %s", url_lote, exc)
+
+    return item
 
 
 def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
@@ -222,7 +427,7 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
 
 async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
     """
-    Coleta lotes via Playwright com fallback de seletores de cards e links de lotes.
+    Coleta lotes via Playwright com fallback de seletores e enriquecimento na página do lote.
     """
     _sanitizar_variaveis_ambiente()
     urls_alvo = [
@@ -236,6 +441,7 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
 
     coletados: list[dict[str, Any]] = []
     urls_vistas: set[str] = set()
+    max_paginas_detalhe = min(max_itens, 8)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -294,11 +500,8 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                     urls_vistas.add(href_raw)
 
                     titulo = _escolher_titulo_card(linhas, href_raw)
-                    valores = _extrair_valores_brl(texto_card)
-                    lance_estimado = valores[0] if valores else 100000.0
-                    mercado_estimado = (
-                        max(valores) * 1.45 if valores and max(valores) > 0 else 160000.0
-                    )
+                    lance_est, mercado_est = _extrair_valores_com_rotulo(texto_card)
+                    cidade_card, uf_card = _extrair_cidade_uf(texto_card)
 
                     coletados.append(
                         {
@@ -309,15 +512,16 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                             "url_edital_pdf": None,
                             "titulo_lote": titulo,
                             "descricao_lote": texto_card[:1500],
-                            "cidade": "Campinas",
-                            "uf": "SP",
-                            "lance_atual": lance_estimado,
-                            "valor_mercado_referencia": mercado_estimado,
+                            "cidade": cidade_card,
+                            "uf": uf_card,
+                            "lance_atual": lance_est if lance_est is not None else 100000.0,
+                            "valor_mercado_referencia": (
+                                mercado_est if mercado_est is not None else 160000.0
+                            ),
                         }
                     )
                     candidatos_extraidos += 1
 
-                # Fallback por links quando o portal não usa cards estruturados padrão
                 if candidatos_extraidos == 0:
                     anchors = page.locator("a[href]")
                     total_anchors = await anchors.count()
@@ -337,11 +541,8 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                             continue
 
                         urls_vistas.add(abs_href)
-                        valores = _extrair_valores_brl(texto_anc)
-                        lance_estimado = valores[0] if valores else 100000.0
-                        mercado_estimado = (
-                            max(valores) * 1.45 if valores and max(valores) > 0 else 160000.0
-                        )
+                        lance_est, mercado_est = _extrair_valores_com_rotulo(texto_anc)
+                        cidade_anc, uf_anc = _extrair_cidade_uf(texto_anc)
 
                         coletados.append(
                             {
@@ -352,10 +553,12 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                                 "url_edital_pdf": None,
                                 "titulo_lote": texto_anc[:180],
                                 "descricao_lote": texto_anc[:1500],
-                                "cidade": "Campinas",
-                                "uf": "SP",
-                                "lance_atual": lance_estimado,
-                                "valor_mercado_referencia": mercado_estimado,
+                                "cidade": cidade_anc,
+                                "uf": uf_anc,
+                                "lance_atual": lance_est if lance_est is not None else 100000.0,
+                                "valor_mercado_referencia": (
+                                    mercado_est if mercado_est is not None else 160000.0
+                                ),
                             }
                         )
                         candidatos_extraidos += 1
@@ -365,6 +568,12 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                 )
             except Exception as exc:
                 logger.warning("Falha ao raspar %s: %s", url, exc)
+
+        # Abre a página de cada lote candidato para ler descrição, localidade e valores reais
+        page_detalhe = await context.new_page()
+        page_detalhe.set_default_timeout(20000)
+        for idx_item in range(min(len(coletados), max_paginas_detalhe)):
+            coletados[idx_item] = await _enriquecer_lote_na_pagina(page_detalhe, coletados[idx_item])
 
         await browser.close()
 
