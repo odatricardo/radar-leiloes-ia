@@ -52,7 +52,7 @@ async def _gerar_com_retry(
     config: types.GenerateContentConfig,
     modelo_principal: str,
     modelo_fallback: str | None = None,
-    max_tentativas: int = 5,
+    max_tentativas: int = 2,
 ):
     modelos = [modelo_principal]
     if modelo_fallback and modelo_fallback != modelo_principal:
@@ -76,7 +76,7 @@ async def _gerar_com_retry(
                 )
                 if not eh_transitorio or tentativa == max_tentativas - 1:
                     break
-                espera = (2 * (tentativa + 1)) + random.uniform(0.2, 1.0)
+                espera = (1.2 * (tentativa + 1)) + random.uniform(0.1, 0.5)
                 await asyncio.sleep(espera)
 
     assert ultimo_erro is not None
@@ -304,3 +304,4 @@ Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
         auditoria=auditoria,
         viabilidade=viabilidade,
     )
+
