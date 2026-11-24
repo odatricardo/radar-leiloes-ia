@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app import agents as ag
 from app.agents import listar_modelos_disponiveis
 from app.config import settings
 from app.db import listar_oportunidades
@@ -52,6 +53,16 @@ def carregar_modelos_cached() -> list[str]:
 def formatar_brl(valor: float) -> str:
     valor_seguro = float(valor or 0.0)
     return f"R$ {valor_seguro:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def formatar_origem_ia(fonte: str) -> str:
+    if fonte.startswith("gemini"):
+        return f"Gemini ({fonte.replace('gemini', '').strip(' ()')})"
+    if fonte.startswith("provedor_secundario"):
+        return f"Provedor Secundário / Groq ({fonte.replace('provedor_secundario', '').strip(' ()')})"
+    if fonte == "regras_contingencia":
+        return "Contingência por Regras (fallback local)"
+    return fonte
 
 
 CATEGORIAS_LABELS = {
@@ -106,6 +117,11 @@ with st.sidebar:
     )
     settings.gemini_model_fast = modelo_selecionado
     settings.gemini_model_audit = modelo_selecionado
+
+    if settings.openai_api_key:
+        st.caption(f"Fallback secundário ativo: `{settings.openai_model}`")
+    else:
+        st.caption("Fallback secundário: não configurado (usa regras se IA falhar)")
 
     st.divider()
     if st.button("🔄 Atualizar Dados do Banco", width="stretch"):
@@ -317,6 +333,7 @@ with tab_avaliar:
         if not leiloeiro or not comitente or not titulo_lote or not cidade:
             st.error("Preencha pelo menos Leiloeiro, Banco Credor, Título e Cidade.")
         else:
+            ag.ultima_fonte_ia = "nao_executado"
             inicio = time.perf_counter()
             with st.spinner(
                 f"Auditando lote com {modelo_selecionado} e calculando distância de Vinhedo/SP..."
@@ -342,16 +359,17 @@ with tab_avaliar:
                     erro_execucao = str(exc)
 
             duracao = time.perf_counter() - inicio
+            origem_rotulo = formatar_origem_ia(ag.ultima_fonte_ia)
 
             if erro_execucao:
-                st.error(f"Falha na análise após {duracao:.1f}s: {erro_execucao}")
+                st.error(f"Falha na análise após {duracao:.1f}s ({origem_rotulo}): {erro_execucao}")
             elif resposta is None or not resposta.aprovado or resposta.curadoria is None:
                 motivo = (
                     resposta.motivo_rejeicao
                     if resposta
                     else "Lote descartado automaticamente na triagem."
                 )
-                st.warning(f"{motivo} *(Tempo: {duracao:.1f}s)*")
+                st.warning(f"{motivo} *(Tempo: {duracao:.1f}s • Motor: {origem_rotulo})*")
             else:
                 resultado = resposta.curadoria
                 cor_banner = {"VERDE": "success", "AMARELO": "warning", "VERMELHO": "error"}.get(
@@ -360,6 +378,7 @@ with tab_avaliar:
                 getattr(st, cor_banner)(
                     f"**Resultado: {resultado.semaforo} | Nível {resultado.nivel_oportunidade} "
                     f"(Score {resultado.score_qualidade}/100) — {duracao:.1f}s**\n\n"
+                    f"**Motor utilizado:** {origem_rotulo}\n\n"
                     f"{resultado.resumo_executivo}\n\n**Ação:** {resultado.acao_recomendada}"
                 )
                 m1, m2, m3, m4 = st.columns(4)
@@ -380,6 +399,7 @@ with tab_avaliar:
                 )
 
                 with st.expander("Detalhes Jurídicos e Operacionais da Auditoria"):
+                    st.write(f"**Motor utilizado:** {origem_rotulo}")
                     st.write(
                         f"**Modalidade:** {resultado.triagem.modalidade_identificada or 'Alienação Fiduciária'}"
                     )
