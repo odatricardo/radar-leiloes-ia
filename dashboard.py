@@ -80,6 +80,17 @@ def formatar_origem_ia(fonte: str) -> str:
     return fonte
 
 
+def sanitizar_url_anuncio(url: object) -> str | None:
+    if not isinstance(url, str):
+        return None
+    limpa = url.strip()
+    if not limpa.startswith(("http://", "https://")):
+        return None
+    if "nao-informado.local" in limpa.lower():
+        return None
+    return limpa
+
+
 CATEGORIAS_LABELS = {
     "caminhonete_4x4": "🛻 Caminhonete 4x4",
     "caminhao": "🚛 Caminhão",
@@ -183,7 +194,7 @@ with tab_dash:
         )
 
         c1.metric("Oportunidades Filtradas", f"{total_lotes} lotes")
-        c2.metric("💎 Nível Diamante (ROI ≥ 35%)", f"{total_diamantes} lotes")
+        c2.metric("💎 Diamante (≥ 35%)", f"{total_diamantes} lotes")
         c3.metric("Margem Líquida Média (ROI)", f"{roi_medio:.1f}%")
         c4.metric("Lucro Potencial (Top 5 Lotes)", formatar_brl(lucro_potencial_top5))
 
@@ -209,10 +220,10 @@ with tab_dash:
                         "lance_maximo_recomendado": ":,.2f",
                     },
                     color_discrete_map={
-                        "DIAMANTE": "#38BDF8",
-                        "PADRAO": "#22C55E",
-                        "ATENCAO": "#F59E0B",
-                        "DESCARTADO": "#EF4444",
+                        "DIAMANTE": "#0284C7",
+                        "PADRAO": "#16A34A",
+                        "ATENCAO": "#D97706",
+                        "DESCARTADO": "#DC2626",
                     },
                     title="Mapa de Decisão: Distância (km) vs. Margem Líquida (%)",
                     labels={
@@ -224,10 +235,10 @@ with tab_dash:
                 fig_scatter.add_hline(
                     y=35,
                     line_dash="dash",
-                    line_color="#38BDF8",
+                    line_color="#0284C7",
                     annotation_text="Linha Diamante (35%)",
                 )
-                fig_scatter.update_layout(template="plotly_dark", height=390)
+                fig_scatter.update_layout(template="plotly_white", height=390)
                 st.plotly_chart(fig_scatter, width="stretch")
 
             with g2:
@@ -251,10 +262,12 @@ with tab_dash:
                         "roi_medio": "ROI Líquido Médio (%)",
                     },
                 )
-                fig_bar.update_layout(template="plotly_dark", showlegend=False, height=390)
+                fig_bar.update_layout(template="plotly_white", showlegend=False, height=390)
                 st.plotly_chart(fig_bar, width="stretch")
 
             st.subheader("Ranking de Lotes Aprovados (Ordenado por Prioridade e Score)")
+            df_filtrado["url_lote_segura"] = df_filtrado["url_lote"].apply(sanitizar_url_anuncio)
+
             df_exibir = df_filtrado[
                 [
                     "nivel_oportunidade",
@@ -270,7 +283,7 @@ with tab_dash:
                     "lance_maximo_recomendado",
                     "margem_liquida_projetada_pct",
                     "lucro_liquido_estimado",
-                    "url_lote",
+                    "url_lote_segura",
                 ]
             ].rename(
                 columns={
@@ -287,7 +300,7 @@ with tab_dash:
                     "lance_maximo_recomendado": "Teto Base (R$)",
                     "margem_liquida_projetada_pct": "ROI Líq. (%)",
                     "lucro_liquido_estimado": "Lucro Est. (R$)",
-                    "url_lote": "Link",
+                    "url_lote_segura": "Link",
                 }
             )
             st.dataframe(
@@ -295,7 +308,7 @@ with tab_dash:
                 width="stretch",
                 hide_index=True,
                 column_config={
-                    "Link": st.column_config.LinkColumn("Abrir Lote"),
+                    "Link": st.column_config.LinkColumn("Abrir Anúncio", display_text="Abrir anúncio"),
                     "Lance Atual (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
                     "Teto Diamante (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
                     "Teto Base (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
@@ -333,7 +346,10 @@ with tab_avaliar:
             "Valor de Revenda Conservador (R$)", min_value=1000.0, value=220000.0, step=1000.0
         )
 
-        url_lote = st.text_input("URL da Página do Lote", placeholder="https://...")
+        url_lote = st.text_input(
+            "URL do Anúncio do Bem no Portal do Leiloeiro",
+            placeholder="https://www.portaldeleilao.com.br/lote/...",
+        )
         url_edital_pdf = st.text_input(
             "URL Direta do PDF do Edital (Opcional - leitura automática)",
             placeholder="https://.../edital.pdf",
@@ -350,6 +366,7 @@ with tab_avaliar:
         else:
             ag.ultima_fonte_ia = "nao_executado"
             inicio = time.perf_counter()
+            url_anuncio_limpa = sanitizar_url_anuncio(url_lote)
             with st.spinner(
                 f"Auditando lote com {modelo_selecionado} e calculando distância de Vinhedo/SP..."
             ):
@@ -357,7 +374,7 @@ with tab_avaliar:
                     leiloeiro=leiloeiro,
                     comitente_credor=comitente,
                     numero_lote=numero_lote or "1",
-                    url_lote=url_lote or "https://nao-informado.local",
+                    url_lote=url_anuncio_limpa or "https://nao-informado.local",
                     url_edital_pdf=url_edital_pdf or None,
                     titulo_lote=titulo_lote,
                     descricao_lote=descricao_lote or titulo_lote,
@@ -415,6 +432,10 @@ with tab_avaliar:
 
                 with st.expander("Detalhes Jurídicos e Operacionais da Auditoria"):
                     st.write(f"**Motor utilizado:** {origem_rotulo}")
+                    if url_anuncio_limpa:
+                        st.write(f"**Anúncio do Bem:** [{url_anuncio_limpa}]({url_anuncio_limpa})")
+                    else:
+                        st.write("**Anúncio do Bem:** URL não informada")
                     st.write(
                         f"**Modalidade:** {resultado.triagem.modalidade_identificada or 'Alienação Fiduciária'}"
                     )
@@ -464,12 +485,12 @@ with tab_simulador:
                 "Preço Revenda",
             ],
             y=[sim_lance, comissao, sim_custos, 0, lucro, 0],
-            connector={"line": {"color": "#4B5563"}},
+            connector={"line": {"color": "#94A3B8"}},
         )
     )
     fig_waterfall.update_layout(
         title=f"Composição Financeira da Operação — ROI Líquido: {roi:.1f}% | Lucro: {formatar_brl(lucro)}",
-        template="plotly_dark",
+        template="plotly_white",
         height=400,
     )
 
