@@ -76,7 +76,9 @@ def _normalizar_dataframe(raw_itens: Any) -> pd.DataFrame:
     for item in raw_itens:
         if isinstance(item, dict):
             base = dict(item)
-            for aninhado in ("curadoria", "triagem", "auditoria", "viabilidade"):
+            if "titulo" in base and not base.get("titulo_lote"):
+                base["titulo_lote"] = base["titulo"]
+            for aninhado in ("curadoria", "triagem", "auditoria", "viabilidade", "payload_completo"):
                 sub = base.get(aninhado)
                 if isinstance(sub, dict):
                     for k, v in sub.items():
@@ -165,31 +167,35 @@ def filtrar_e_ordenar_oportunidades(
             (out["nivel_oportunidade"] != "DESCARTADO") & (out["semaforo"] != "VERMELHO")
         ]
 
-    # Exige título mínimo real
     out = out[out["titulo_lote"].str.len() >= 5]
 
-    # Filtra distância acima do raio permitido
     dist_num = pd.to_numeric(out["distancia_vinhedo_km"], errors="coerce")
     out = out[dist_num.isna() | (dist_num <= raio_max_km)]
 
-    # Filtra termos fora do escopo (motos, sucatas, judicial, sem título)
     cols_texto = [
-        c for c in ("titulo_lote", "descricao_lote", "url_lote", "leiloeiro") if c in out.columns
+        c
+        for c in ("titulo_lote", "titulo", "descricao_lote", "url_lote", "leiloeiro")
+        if c in out.columns
     ]
-    if cols_texto:
-        serie_texto = out[cols_texto].fillna("").agg(" ".join, axis=1).str.lower()
+    if cols_texto and not out.empty:
+        serie_texto = pd.Series("", index=out.index, dtype="object")
+        for c in cols_texto:
+            serie_texto = serie_texto + " " + out[c].fillna("").astype(str)
+        serie_texto = serie_texto.str.lower()
         mascara_bloqueio = serie_texto.apply(
             lambda txt: any(termo in txt for termo in TERMOS_FORA_EXIBICAO)
         )
         out = out[~mascara_bloqueio]
 
-    # Remove títulos puramente genéricos (ex.: "1 Lotes")
-    mascara_generico = out["titulo_lote"].str.lower().apply(
-        lambda t: bool(re.fullmatch(r"\d+\s*lotes?", t.strip()))
-    )
-    out = out[~mascara_generico]
+    if not out.empty:
+        mascara_generico = out["titulo_lote"].str.lower().apply(
+            lambda t: bool(re.fullmatch(r"\d+\s*lotes?", t.strip()))
+        )
+        out = out[~mascara_generico]
 
-    # Deduplica por url_lote ou titulo_lote + cidade + uf
+    if out.empty:
+        return out
+
     out["_chave_dedup"] = out.apply(
         lambda r: (
             r["url_lote"].strip().lower()
