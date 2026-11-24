@@ -1,17 +1,28 @@
-name: Radar Leiloes IA - Coleta e Auditoria Automatica
+name: Radar Leiloes Automatico
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    # 11h00 e 20h00 UTC (08h00 e 17h00 BRT)
+    - cron: "0 11 * * *"
+    - cron: "0 20 * * *"
   workflow_dispatch:
+    inputs:
+      max_lotes:
+        description: "Máximo de lotes avaliados pela IA nesta execução"
+        required: false
+        default: "3"
+
+concurrency:
+  group: radar-leiloes-coleta
+  cancel-in-progress: true
 
 jobs:
-  varrer-e-auditar:
+  coletar-e-auditar:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
 
     steps:
-      - name: Baixar codigo do repositorio
+      - name: Checkout do repositório
         uses: actions/checkout@v4
 
       - name: Configurar Python 3.11
@@ -20,21 +31,26 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Instalar dependencias Python
+      - name: Instalar dependências Python
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install playwright
 
-      - name: Instalar navegador Chromium para o Scraper
-        run: playwright install --with-deps chromium
+      - name: Instalar Chromium do Playwright
+        run: |
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
 
-      - name: Executar Coleta + Agentes de IA + Gravar no Supabase
+      - name: Executar scraper e pipeline de avaliação
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL_FAST: ${{ secrets.GEMINI_MODEL_FAST }}
+          GEMINI_MODEL_AUDIT: ${{ secrets.GEMINI_MODEL_AUDIT }}
+          GEMINI_FALLBACK_MODELS: ${{ secrets.GEMINI_FALLBACK_MODELS }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SCRAPER_TARGET_URL: ${{ secrets.SCRAPER_TARGET_URL }}
-          SCRAPER_AUCTIONEER: ${{ secrets.SCRAPER_AUCTIONEER }}
-          SCRAPER_CREDITOR: ${{ secrets.SCRAPER_CREDITOR }}
-          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
-        run: python -m app.runner_automatico
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          SCRAPER_TARGET_URLS: ${{ secrets.SCRAPER_TARGET_URLS }}
+          MAX_LOTES_POR_EXECUCAO: ${{ github.event.inputs.max_lotes || '3' }}
+        run: |
+          python scraper_playwright.py --max-lotes "$MAX_LOTES_POR_EXECUCAO" --delay 2.5
