@@ -264,9 +264,36 @@ def _extrair_valores_brl(texto: str) -> list[float]:
     return valores
 
 
-def _extrair_valores_com_rotulo(texto: str) -> tuple[float | None, float | None]:
+def _multiplicador_mercado_por_texto(texto: str) -> float:
+    baixa = (texto or "").lower()
+    if any(k in baixa for k in ("apto", "apartamento", "casa", "terreno", "galpão", "galpao", "imóvel", "imovel", "matrícula", "matricula")):
+        return 1.65
+    return 1.55
+
+
+def _garantir_valores_coerentes(
+    lance: float | None, avaliacao: float | None, contexto_texto: str = ""
+) -> tuple[float, float]:
+    """Garante que lance e valor de mercado fiquem positivos e coerentes (avaliação > lance)."""
+    mult = _multiplicador_mercado_por_texto(contexto_texto)
+
+    lance_ok = float(lance) if (lance is not None and lance >= 500.0) else None
+    aval_ok = float(avaliacao) if (avaliacao is not None and avaliacao >= 500.0) else None
+
+    if lance_ok is None and aval_ok is None:
+        lance_ok = 100000.0
+        aval_ok = round(lance_ok * mult, 2)
+    elif lance_ok is not None and (aval_ok is None or aval_ok <= lance_ok):
+        aval_ok = round(lance_ok * mult, 2)
+    elif aval_ok is not None and lance_ok is None:
+        lance_ok = round(aval_ok * 0.55, 2)
+
+    return round(lance_ok, 2), round(aval_ok, 2)
+
+
+def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
     """
-    Retorna (lance_atual_ou_minimo, valor_avaliacao_ou_mercado) quando identificados no texto.
+    Retorna (lance_atual_ou_minimo, valor_avaliacao_ou_mercado) sempre com valores coerentes.
     """
     lance: float | None = None
     avaliacao: float | None = None
@@ -299,15 +326,8 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float | None, float | None]
         maior = max(todos)
         if lance is not None and maior > lance:
             avaliacao = maior
-        elif lance is not None:
-            avaliacao = round(lance * 1.45, 2)
 
-    if lance is not None and avaliacao is None:
-        avaliacao = round(lance * 1.45, 2)
-    if avaliacao is not None and lance is None:
-        lance = round(avaliacao * 0.60, 2)
-
-    return lance, avaliacao
+    return _garantir_valores_coerentes(lance, avaliacao, texto)
 
 
 def _extrair_cidade_uf(
@@ -584,10 +604,10 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         item["uf"] = uf_real
 
         lance_real, avaliacao_real = _extrair_valores_com_rotulo(texto_pagina)
-        if lance_real is not None:
-            item["lance_atual"] = lance_real
-        if avaliacao_real is not None:
-            item["valor_mercado_referencia"] = avaliacao_real
+        contexto = f"{item.get('titulo_lote', '')} {texto_pagina[:1200]}"
+        lance_ok, aval_ok = _garantir_valores_coerentes(lance_real, avaliacao_real, contexto)
+        item["lance_atual"] = lance_ok
+        item["valor_mercado_referencia"] = aval_ok
 
         pdf_link = page.locator("a[href*='.pdf'], a[href*='edital']").first
         if await pdf_link.count():
@@ -720,6 +740,9 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
 
                     titulo = _escolher_titulo_card(linhas, href_raw)
                     lance_est, mercado_est = _extrair_valores_com_rotulo(texto_card)
+                    lance_ok, aval_ok = _garantir_valores_coerentes(
+                        lance_est, mercado_est, f"{titulo} {texto_card}"
+                    )
                     cidade_card, uf_card = _extrair_cidade_uf(texto_card)
 
                     coletados.append(
@@ -733,10 +756,8 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                             "descricao_lote": texto_card[:1500],
                             "cidade": cidade_card,
                             "uf": uf_card,
-                            "lance_atual": lance_est if lance_est is not None else 100000.0,
-                            "valor_mercado_referencia": (
-                                mercado_est if mercado_est is not None else 160000.0
-                            ),
+                            "lance_atual": lance_ok,
+                            "valor_mercado_referencia": aval_ok,
                         }
                     )
                     candidatos_extraidos += 1
@@ -761,6 +782,9 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
 
                         urls_vistas.add(abs_href)
                         lance_est, mercado_est = _extrair_valores_com_rotulo(texto_anc)
+                        lance_ok, aval_ok = _garantir_valores_coerentes(
+                            lance_est, mercado_est, texto_anc
+                        )
                         cidade_anc, uf_anc = _extrair_cidade_uf(texto_anc)
 
                         coletados.append(
@@ -774,10 +798,8 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                                 "descricao_lote": texto_anc[:1500],
                                 "cidade": cidade_anc,
                                 "uf": uf_anc,
-                                "lance_atual": lance_est if lance_est is not None else 100000.0,
-                                "valor_mercado_referencia": (
-                                    mercado_est if mercado_est is not None else 160000.0
-                                ),
+                                "lance_atual": lance_ok,
+                                "valor_mercado_referencia": aval_ok,
                             }
                         )
                         candidatos_extraidos += 1
