@@ -30,10 +30,25 @@ st.markdown(
         padding-bottom: 2.5rem;
     }
     div[data-testid="stMetric"] {
-        background-color: #111827;
-        border: 1px solid #1F2937;
-        padding: 14px 18px;
+        background-color: #F8FAFC;
+        border: 1px solid #CBD5E1;
+        padding: 14px 16px;
         border-radius: 12px;
+        overflow: hidden;
+    }
+    div[data-testid="stMetric"] label,
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+        color: #334155 !important;
+        font-size: 0.85rem !important;
+        font-weight: 600 !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        color: #0F172A !important;
+        font-size: 1.35rem !important;
+        font-weight: 700 !important;
+        white-space: nowrap !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
     }
     button[data-baseweb="tab"] {
         padding-top: 8px;
@@ -383,18 +398,18 @@ with tab_avaliar:
                 )
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric(
-                    "Lance Máx. Diamante (≥35%)",
+                    "Teto Diamante (≥35%)",
                     formatar_brl(resultado.viabilidade.lance_maximo_diamante),
                 )
                 m2.metric(
-                    "Lance Máx. Base", formatar_brl(resultado.viabilidade.lance_maximo_recomendado)
+                    "Teto Meta Base", formatar_brl(resultado.viabilidade.lance_maximo_recomendado)
                 )
                 m3.metric(
-                    "Margem Líquida Real",
+                    "Margem Líquida",
                     f"{resultado.viabilidade.margem_liquida_projetada_pct:.1f}%",
                 )
                 m4.metric(
-                    "Lucro Líquido Estimado",
+                    "Lucro Estimado",
                     formatar_brl(resultado.viabilidade.lucro_liquido_estimado),
                 )
 
