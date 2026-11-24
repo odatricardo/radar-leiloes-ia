@@ -49,6 +49,69 @@ UFS_BRASIL = {
     "TO",
 }
 
+ESTADOS_POR_UF: dict[str, str] = {
+    "AC": "Acre",
+    "AL": "Alagoas",
+    "AP": "Amapá",
+    "AM": "Amazonas",
+    "BA": "Bahia",
+    "CE": "Ceará",
+    "DF": "Distrito Federal",
+    "ES": "Espírito Santo",
+    "GO": "Goiás",
+    "MA": "Maranhão",
+    "MT": "Mato Grosso",
+    "MS": "Mato Grosso do Sul",
+    "MG": "Minas Gerais",
+    "PA": "Pará",
+    "PB": "Paraíba",
+    "PR": "Paraná",
+    "PE": "Pernambuco",
+    "PI": "Piauí",
+    "RJ": "Rio de Janeiro",
+    "RN": "Rio Grande do Norte",
+    "RS": "Rio Grande do Sul",
+    "RO": "Rondônia",
+    "RR": "Roraima",
+    "SC": "São Paulo",
+    "SP": "São Paulo",
+    "SE": "Sergipe",
+    "TO": "Tocantins",
+}
+ESTADOS_POR_UF["SC"] = "Santa Catarina"
+
+TERMOS_ESCOPO_ATIVOS = (
+    "caminhonete",
+    "4x4",
+    "hilux",
+    "ranger",
+    "amarok",
+    "s10",
+    "sw4",
+    "caminhao",
+    "caminhão",
+    "scania",
+    "volvo",
+    "mercedes",
+    "iveco",
+    "trator",
+    "colhedora",
+    "maquina agricola",
+    "máquina agrícola",
+    "implemento",
+    "reboque",
+    "veiculo",
+    "veículo",
+    "imovel",
+    "imóvel",
+    "apartamento",
+    "apto",
+    "casa",
+    "terreno",
+    "galpao",
+    "galpão",
+)
+
 PALAVRAS_BLOQUEIO = (
     "sucata",
     "irrecuperavel",
@@ -63,7 +126,6 @@ PALAVRAS_BLOQUEIO = (
     "justica do trabalho",
     "justiça do trabalho",
     "judicial online",
-    "4x2",
     "câmera",
     "camera",
     "alarme",
@@ -226,9 +288,14 @@ def _normalizar_texto(texto: str | None) -> str:
     return " ".join(texto.lower().split())
 
 
+def _tem_termo_escopo(texto: str) -> bool:
+    baixa = _normalizar_texto(texto)
+    return any(t in baixa for t in TERMOS_ESCOPO_ATIVOS)
+
+
 def _formatar_nome_cidade(bruto: str) -> str:
     """Normaliza 'BARRETOS' ou 'são paulo' para 'Barretos' ou 'São Paulo'."""
-    limpo = " ".join(bruto.strip(" ,;-–/").split())
+    limpo = " ".join(bruto.strip(" ,;-–/([)").split())
     minusculas_conectivos = {"de", "da", "do", "das", "dos", "e"}
     partes = limpo.lower().split(" ")
     formatadas: list[str] = []
@@ -266,7 +333,21 @@ def _extrair_valores_brl(texto: str) -> list[float]:
 
 def _multiplicador_mercado_por_texto(texto: str) -> float:
     baixa = (texto or "").lower()
-    if any(k in baixa for k in ("apto", "apartamento", "casa", "terreno", "galpão", "galpao", "imóvel", "imovel", "matrícula", "matricula")):
+    if any(
+        k in baixa
+        for k in (
+            "apto",
+            "apartamento",
+            "casa",
+            "terreno",
+            "galpão",
+            "galpao",
+            "imóvel",
+            "imovel",
+            "matrícula",
+            "matricula",
+        )
+    ):
         return 1.65
     return 1.55
 
@@ -330,69 +411,109 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
     return _garantir_valores_coerentes(lance, avaliacao, texto)
 
 
+def _cidade_parece_ruido(cidade_bruta: str) -> bool:
+    baixa = cidade_bruta.lower().strip()
+    if len(baixa) < 3:
+        return True
+    if any(
+        ruido in baixa
+        for ruido in (
+            "http",
+            "www",
+            "lote",
+            "edital",
+            "processo",
+            "banco",
+            "leilão",
+            "leilao",
+            "lance",
+            "avaliação",
+            "industrial",
+            "máquinas",
+            "maquinas",
+            "equipamentos",
+            "eventos",
+            "localização",
+            "localizacao",
+            "retirada",
+            "pátio",
+            "patio",
+            "comarca",
+            "estado",
+        )
+    ):
+        return True
+    return False
+
+
 def _extrair_cidade_uf(
     texto: str, padrao_cidade: str = "Não informada", padrao_uf: str = "XX"
 ) -> tuple[str, str]:
     """
-    Extrai (cidade, uf) a partir de padrões como 'Barretos-SP', 'Campinas/SP' ou 'Sorocaba - SP'.
+    Extrai (cidade, uf) de padrões como 'Barretos-SP', 'Campinas/SP', 'Campinas (SP)'
+    ou campos rotulados ('Local: Campinas', 'UF: SP').
     """
     janelas: list[str] = []
     for kw in (
         "localização",
         "localizacao",
+        "local",
+        "retirada",
+        "pátio",
+        "patio",
         "avaliação",
         "lance mínimo",
         "depositário",
         "comarca",
         "cidade",
+        "município",
+        "municipio",
         "endereço",
+        "estado",
+        "uf",
     ):
-        for match in re.finditer(re.escape(kw), texto, flags=re.IGNORECASE):
-            inicio = max(0, match.start() - 80)
+        for match in re.finditer(r"\b" + re.escape(kw) + r"\b", texto, flags=re.IGNORECASE):
+            inicio = max(0, match.start() - 60)
             fim = min(len(texto), match.end() + 200)
             janelas.append(texto[inicio:fim])
-    janelas.append(texto[:4500])
+    janelas.append(texto[:5500])
 
     regex_loc = re.compile(
-        r"(?:^|[\s:;(\[])([A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*(?:/|-|–)\s*([A-Za-z]{2})(?=$|[\s.,;)\]])",
+        r"(?:^|[\s:;(\[])([A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*(?:/|-|–|\()\s*([A-Za-z]{2})(?=$|[\s.,;)\]])",
         flags=re.MULTILINE,
     )
 
     for trecho in janelas:
         for m in regex_loc.finditer(trecho):
-            cidade_bruta = m.group(1).strip(" ,;-–/([")
+            cidade_bruta = m.group(1).strip(" ,;-–/([)")
             uf_cand = m.group(2).strip().upper()
-            if uf_cand not in UFS_BRASIL:
-                continue
-            baixa = cidade_bruta.lower()
-            if any(
-                ruido in baixa
-                for ruido in (
-                    "http",
-                    "www",
-                    "lote",
-                    "edital",
-                    "processo",
-                    "banco",
-                    "leilão",
-                    "leilao",
-                    "lance",
-                    "avaliação",
-                    "industrial",
-                    "máquinas",
-                    "maquinas",
-                    "equipamentos",
-                    "eventos",
-                    "localização",
-                    "localizacao",
-                )
-            ):
+            if uf_cand not in UFS_BRASIL or _cidade_parece_ruido(cidade_bruta):
                 continue
             cidade_fmt = _formatar_nome_cidade(cidade_bruta)
             if len(cidade_fmt) >= 3:
                 return cidade_fmt[:80], uf_cand
 
-    return padrao_cidade, padrao_uf
+    # Fallback para rótulos separados: "UF: SP" / "Cidade: Ribeirão Preto"
+    uf_detectada = padrao_uf if padrao_uf in UFS_BRASIL else None
+    if not uf_detectada:
+        m_uf = re.search(
+            r"(?:\buf\b|\bestado\b)\s*[:\-–]?\s*([A-Za-z]{2})\b", texto, flags=re.IGNORECASE
+        )
+        if m_uf and m_uf.group(1).upper() in UFS_BRASIL:
+            uf_detectada = m_uf.group(1).upper()
+
+    if uf_detectada:
+        m_cid = re.search(
+            r"(?:cidade|munic[ií]pio|local(?:iza[cç][aã]o)?|retirada)\s*[:\-–]\s*([A-Za-zÀ-ÿ\s'\-\.]{3,45})",
+            texto,
+            flags=re.IGNORECASE,
+        )
+        if m_cid:
+            cid_cand = re.split(r"\s*(?:/|-|–|\(|\n|,|;)", m_cid.group(1))[0].strip()
+            if not _cidade_parece_ruido(cid_cand):
+                return _formatar_nome_cidade(cid_cand)[:80], uf_detectada
+
+    return padrao_cidade, uf_detectada or padrao_uf
 
 
 def _escolher_titulo_card(linhas: list[str], href: str) -> str:
@@ -422,7 +543,7 @@ def _escolher_titulo_card(linhas: list[str], href: str) -> str:
                     "mercedes",
                     "iveco",
                     "trator",
-                    "colheitadeira",
+                    "colhedora",
                     "apartamento",
                     "casa",
                     "terreno",
@@ -561,10 +682,14 @@ def _extrair_sinais_operacionais(texto: str) -> str:
 
 async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[str, Any]:
     """Abre a url_lote para extrair descrição, cidade/UF e valores reais quando disponível."""
+    if item.get("_enriquecido"):
+        return item
+
     url_lote = item.get("url_lote")
     if not url_lote or not str(url_lote).startswith(("http://", "https://")):
         return item
 
+    item["_enriquecido"] = True
     try:
         await page.goto(url_lote, wait_until="domcontentloaded", timeout=20000)
         await page.wait_for_timeout(1800)
@@ -639,26 +764,23 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
     if _titulo_parece_generico(bruto.get("titulo_lote", "")):
         return False, "Título genérico ou de navegação/login/categoria."
 
-    cidade = (bruto.get("cidade") or "").strip()
-    if not titulo or not cidade or cidade.lower() in {"não informada", "nao informada"}:
-        return False, "Dados mínimos ausentes (título ou localização)."
-
     for termo in PALAVRAS_BLOQUEIO:
         if termo in combinado:
             return False, f"Bloqueado no pré-filtro por termo: '{termo}'."
 
+    cidade = (bruto.get("cidade") or "").strip()
+    if not titulo or not cidade or cidade.lower() in {"não informada", "nao informada"}:
+        return False, "Dados mínimos ausentes (título ou localização)."
+
     tem_indicio_fiduciaria = any(ind in combinado for ind in INDICADORES_FIDUCIARIA)
-    if not tem_indicio_fiduciaria:
+    tem_ativo_escopo = _tem_termo_escopo(combinado)
+    if not tem_indicio_fiduciaria and not (bruto.get("_enriquecido") and tem_ativo_escopo):
         return False, "Sem indício claro de alienação fiduciária / retomada financeira."
 
     return True, "OK"
 
 
-async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
-    """
-    Coleta lotes via Playwright com suporte a lazy-loading, fallback de rotas por portal
-    e enriquecimento na página do lote.
-    """
+async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]:
     _sanitizar_variaveis_ambiente()
     urls_base = [
         u.strip()
@@ -673,7 +795,6 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
     coletados: list[dict[str, Any]] = []
     urls_vistas: set[str] = set()
     portais_com_candidatos: set[str] = set()
-    max_paginas_detalhe = min(max_itens, 8)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -816,11 +937,31 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
             except Exception as exc:
                 logger.warning("Falha ao raspar %s: %s", url, exc)
 
+        await browser.close()
+
+    return coletados
+
+
+async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
+    """Coleta e enriquece até min(max_itens, 8) lotes nas páginas de detalhe."""
+    coletados = await _coletar_brutos_sem_enriquecer(max_itens=max_itens)
+    if not coletados:
+        return []
+
+    max_paginas_detalhe = min(len(coletados), max_itens, 8)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1366, "height": 768},
+        )
         page_detalhe = await context.new_page()
         page_detalhe.set_default_timeout(20000)
-        for idx_item in range(min(len(coletados), max_paginas_detalhe)):
+        for idx_item in range(max_paginas_detalhe):
             coletados[idx_item] = await _enriquecer_lote_na_pagina(page_detalhe, coletados[idx_item])
-
         await browser.close()
 
     return coletados
@@ -828,10 +969,41 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
 
 async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: float = 2.5) -> None:
     _sanitizar_variaveis_ambiente()
-    brutos = await coletar_lotes_exemplo(max_itens=max_lotes * 4)
+    brutos = await _coletar_brutos_sem_enriquecer(max_itens=max_lotes * 5)
     if not brutos:
         logger.info("Pipeline encerrado sem novos lotes para avaliar.")
         return
+
+    # Pré-enriquece candidatos promissores sem localização antes do pré-filtro (limite de 6 páginas)
+    candidatos_sem_loc: list[dict[str, Any]] = []
+    for bruto in brutos:
+        combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')}"
+        cidade_atual = (bruto.get("cidade") or "").strip().lower()
+        bloqueado_direto = any(termo in _normalizar_texto(combinado) for termo in PALAVRAS_BLOQUEIO)
+        if (
+            not _titulo_parece_generico(bruto.get("titulo_lote", ""))
+            and not bloqueado_direto
+            and _tem_termo_escopo(combinado)
+            and (not cidade_atual or cidade_atual in {"não informada", "nao informada"})
+            and len(candidatos_sem_loc) < 6
+        ):
+            candidatos_sem_loc.append(bruto)
+
+    if candidatos_sem_loc:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1366, "height": 768},
+            )
+            page_loc = await context.new_page()
+            page_loc.set_default_timeout(20000)
+            for item in candidatos_sem_loc:
+                await _enriquecer_lote_na_pagina(page_loc, item)
+            await browser.close()
 
     avaliados = 0
     aprovados = 0
