@@ -24,6 +24,16 @@ def salvar_lote_avaliado(lote: LoteEntrada, resultado: CuradoriaFinal) -> None:
         %(payload_completo)s::jsonb, NOW()
     )
     ON CONFLICT (lote_id) DO UPDATE SET
+        leiloeiro = EXCLUDED.leiloeiro,
+        comitente_credor = EXCLUDED.comitente_credor,
+        url_lote = EXCLUDED.url_lote,
+        url_edital_pdf = EXCLUDED.url_edital_pdf,
+        modalidade = EXCLUDED.modalidade,
+        categoria = EXCLUDED.categoria,
+        titulo = EXCLUDED.titulo,
+        cidade = EXCLUDED.cidade,
+        uf = EXCLUDED.uf,
+        distancia_vinhedo_km = EXCLUDED.distancia_vinhedo_km,
         lance_atual = EXCLUDED.lance_atual,
         valor_mercado_referencia = EXCLUDED.valor_mercado_referencia,
         lance_maximo_recomendado = EXCLUDED.lance_maximo_recomendado,
@@ -76,9 +86,9 @@ def listar_oportunidades(
 ) -> list[dict]:
     query = """
     SELECT lote_id, semaforo, nivel_oportunidade, score_qualidade, categoria, titulo,
-           cidade, uf, distancia_vinhedo_km, lance_atual, lance_maximo_recomendado,
-           lance_maximo_diamante, margem_liquida_projetada_pct, lucro_liquido_estimado,
-           resumo_executivo, url_lote
+           cidade, uf, distancia_vinhedo_km, lance_atual, valor_mercado_referencia,
+           lance_maximo_recomendado, lance_maximo_diamante, margem_liquida_projetada_pct,
+           lucro_liquido_estimado, resumo_executivo, url_lote, atualizado_em
     FROM lotes_leilao
     WHERE 1 = 1
     """
