@@ -242,7 +242,7 @@ async def _chamar_provedor_secundario_json(
                 f"{schema_json}"
             ),
         },
-        {"role": "user", content": prompt},
+        {"role": "user", "content": prompt},
     ]
 
     modelos_tentativa: list[str] = []
