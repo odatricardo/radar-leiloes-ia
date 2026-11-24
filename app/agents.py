@@ -53,10 +53,17 @@ def listar_modelos_disponiveis() -> list[str]:
     try:
         for m in client.models.list():
             nome = (getattr(m, "name", "") or "").replace("models/", "").strip()
-            acoes = getattr(m, "supported_actions", None) or getattr(m, "supported_generation_methods", None) or []
+            acoes = (
+                getattr(m, "supported_actions", None)
+                or getattr(m, "supported_generation_methods", None)
+                or []
+            )
             if not nome or "gemini" not in nome.lower():
                 continue
-            if any(b in nome.lower() for b in ("embedding", "imagen", "veo", "aqa", "tts", "audio", "robotics")):
+            if any(
+                b in nome.lower()
+                for b in ("embedding", "imagen", "veo", "aqa", "tts", "audio", "robotics")
+            ):
                 continue
             if acoes and "generateContent" not in acoes:
                 continue
@@ -81,7 +88,9 @@ async def _gerar_com_retry(
             modelos.insert(1, nome_fb)
 
     ultimo_erro: Exception | None = None
-    for modelo in modelos:
+    erro_transitorio_principal: Exception | None = None
+
+    for idx_modelo, modelo in enumerate(modelos):
         for tentativa in range(max_tentativas):
             try:
                 return await client.aio.models.generate_content(
@@ -96,16 +105,18 @@ async def _gerar_com_retry(
                 eh_transitorio = (not eh_erro_fixo) and any(
                     marcador in msg for marcador in TRANSIENT_MARKERS
                 )
-                # Se for erro fixo (ex: 404), pula imediatamente para o próximo modelo da cadeia
-                if eh_erro_fixo:
-                    break
-                if not eh_transitorio or tentativa == max_tentativas - 1:
+                if eh_transitorio and erro_transitorio_principal is None:
+                    erro_transitorio_principal = exc
+                if eh_erro_fixo or not eh_transitorio or tentativa == max_tentativas - 1:
                     break
                 espera = (1.0 * (tentativa + 1)) + random.uniform(0.1, 0.4)
                 await asyncio.sleep(espera)
 
-    assert ultimo_erro is not None
-    raise ultimo_erro
+        if idx_modelo == 0 and erro_transitorio_principal is not None:
+            break
+
+    assert (erro_transitorio_principal or ultimo_erro) is not None
+    raise erro_transitorio_principal or ultimo_erro
 
 
 def _haversine_rodoviario_estimado(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
