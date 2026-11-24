@@ -700,34 +700,31 @@ async def agente_4_e_5_curador(
     )
 
     bloqueio_grave = (
-        not auditoria.recuperado_financiamento_confirmado
-        or auditoria.sinistro_ou_avaria_grave
+        auditoria.sinistro_ou_avaria_grave
         or auditoria.restricao_documental_ou_judicial
         or divida_pct_mercado > 8.0
         or (not is_diamante and viabilidade.margem_liquida_projetada_pct < margem_meta)
     )
 
+    fiduciaria_ok = bool(auditoria.recuperado_financiamento_confirmado)
     posse_ok = auditoria.posse_ou_chave in ("com_chave", "desocupado")
     debitos_ok = auditoria.responsavel_debitos_anteriores == "credor_vendedor"
 
     if bloqueio_grave:
         semaforo: SemaforoStatus = "VERMELHO"
         nivel: NivelOportunidade = "DESCARTADO"
-    elif is_diamante and posse_ok and debitos_ok:
+    elif is_diamante and fiduciaria_ok and posse_ok and debitos_ok:
         semaforo = "VERDE"
-        nivel = "DIAMANTE"
-    elif is_diamante and (posse_ok or debitos_ok):
-        semaforo = "AMARELO"
         nivel = "DIAMANTE"
     elif is_diamante:
         semaforo = "AMARELO"
-        nivel = "ATENCAO"
-    elif viabilidade.margem_liquida_projetada_pct >= margem_meta and posse_ok:
+        nivel = "DIAMANTE"
+    elif viabilidade.margem_liquida_projetada_pct >= margem_meta and fiduciaria_ok and posse_ok:
         semaforo = "VERDE"
         nivel = "PADRAO"
     else:
         semaforo = "AMARELO"
-        nivel = "ATENCAO"
+        nivel = "PADRAO" if viabilidade.margem_liquida_projetada_pct >= margem_meta else "ATENCAO"
 
     alertas_txt = ", ".join(auditoria.alertas_criticos) or "Nenhum"
     prompt = (
