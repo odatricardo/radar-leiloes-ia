@@ -48,6 +48,10 @@ jobs:
           GEMINI_MODEL_FAST: ${{ secrets.GEMINI_MODEL_FAST }}
           GEMINI_MODEL_AUDIT: ${{ secrets.GEMINI_MODEL_AUDIT }}
           GEMINI_FALLBACK_MODELS: ${{ secrets.GEMINI_FALLBACK_MODELS }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          PERMITIR_FALLBACK_REGRAS: "true"
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
           SCRAPER_TARGET_URLS: ${{ secrets.SCRAPER_TARGET_URLS }}
