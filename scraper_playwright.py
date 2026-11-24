@@ -55,13 +55,33 @@ PALAVRAS_BLOQUEIO = (
     "irrecuperável",
     "motocicleta",
     "moto ",
+    "biz ",
     "execucao fiscal",
     "execução fiscal",
     "trabalhista",
     "penhora",
     "justica do trabalho",
     "justiça do trabalho",
+    "judicial online",
     "4x2",
+    "câmera",
+    "camera",
+    "alarme",
+    "nvr",
+    "gabinete",
+    "mesa",
+    "cadeira",
+    "aspirador",
+    "mixer",
+    "frigobar",
+    "freezer",
+    "expositora",
+    "ponte rolante",
+    "empilhadeira",
+    "torno",
+    "solda",
+    "gerador",
+    "motogerador",
 )
 
 INDICADORES_FIDUCIARIA = (
@@ -79,6 +99,8 @@ INDICADORES_FIDUCIARIA = (
     "john deere",
     "cnh ",
     "safra",
+    "consórcio",
+    "consorcio",
 )
 
 PADROES_URL_IGNORADA = (
@@ -86,8 +108,10 @@ PADROES_URL_IGNORADA = (
     "/cadastro",
     "/minha-conta",
     "/contato",
+    "/fale-conosco",
     "/institucional",
     "/quem-somos",
+    "/regulamento",
     "/termos",
     "/privacidade",
     "/ajuda",
@@ -104,11 +128,42 @@ PADROES_URL_LOTE = (
     "veiculo",
     "imovel",
     "leilao",
+    "evento",
     "oferta",
     "detalhe",
     "asset",
     "lot",
+    "pos-leilao",
 )
+
+URLS_ALTERNATIVAS_PORTAL: dict[str, list[str]] = {
+    "superbid.net": [
+        "https://exchange.superbid.net/pos-leilao/todos",
+        "https://www.superbid.net/leiloes",
+    ],
+    "sold.com.br": [
+        "https://www.sold.com.br/lotes",
+    ],
+    "sodresantoro.com.br": [
+        "https://www.sodresantoro.com.br/lotes",
+        "https://www.sodresantoro.com.br/",
+    ],
+    "vipleiloes.com.br": [
+        "https://www.vipleiloes.com.br/lotes",
+        "https://www.vipleiloes.com.br/",
+    ],
+    "portalzuk.com.br": [
+        "https://www.portalzuk.com.br/leilao-de-veiculos",
+        "https://www.portalzuk.com.br/leilao-de-imoveis",
+        "https://www.portalzuk.com.br/",
+    ],
+    "megaleiloes.com.br": [
+        "https://www.megaleiloes.com.br/veiculos/caminhoes",
+        "https://www.megaleiloes.com.br/veiculos",
+        "https://www.megaleiloes.com.br/imoveis",
+        "https://www.megaleiloes.com.br/",
+    ],
+}
 
 
 def _limpar_env(nome: str, padrao: str = "") -> str:
@@ -153,7 +208,6 @@ def _parse_moeda_brl(bruto: str) -> float | None:
     if "," in limpo:
         limpo = limpo.replace(".", "").replace(",", ".")
     else:
-        # Se tiver apenas ponto como separador de milhar (ex.: 28.000)
         if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", limpo):
             limpo = limpo.replace(".", "")
     try:
@@ -219,13 +273,22 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float | None, float | None]
     return lance, avaliacao
 
 
-def _extrair_cidade_uf(texto: str, padrao_cidade: str = "Campinas", padrao_uf: str = "SP") -> tuple[str, str]:
+def _extrair_cidade_uf(
+    texto: str, padrao_cidade: str = "Campinas", padrao_uf: str = "SP"
+) -> tuple[str, str]:
     """
     Extrai (cidade, uf) a partir de padrões comuns como 'Águas Lindas de Goiás/GO' ou 'Campinas - SP'.
     """
-    # Evita capturar links/menus de topo procurando primeiro perto de palavras-chave de localização
     janelas: list[str] = []
-    for kw in ("avaliação", "lance mínimo", "depositário", "comarca", "localização", "cidade", "endereço"):
+    for kw in (
+        "avaliação",
+        "lance mínimo",
+        "depositário",
+        "comarca",
+        "localização",
+        "cidade",
+        "endereço",
+    ):
         for match in re.finditer(re.escape(kw), texto, flags=re.IGNORECASE):
             inicio = max(0, match.start() - 120)
             fim = min(len(texto), match.end() + 180)
@@ -342,6 +405,44 @@ def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
     return False
 
 
+def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | None]]:
+    """
+    Retorna pares (url_para_acessar, dominio_principal_se_fallback) preservando a ordem.
+    """
+    plano: list[tuple[str, str | None]] = []
+    vistas: set[str] = set()
+
+    for url in urls_base:
+        u_limpa = url.strip()
+        if not u_limpa or u_limpa in vistas:
+            continue
+        vistas.add(u_limpa)
+        plano.append((u_limpa, None))
+
+        host = (urlparse(u_limpa).netloc or "").lower().removeprefix("www.")
+        for dominio_chave, alternativas in URLS_ALTERNATIVAS_PORTAL.items():
+            if host == dominio_chave or host.endswith(f".{dominio_chave}"):
+                for alt in alternativas:
+                    if alt not in vistas:
+                        vistas.add(alt)
+                        plano.append((alt, dominio_chave))
+                break
+
+    return plano
+
+
+async def _rolar_pagina_lazy(page: Page, passos: int = 5, espera_s: float = 0.75) -> None:
+    """Rola a página em etapas para disparar carregamento lazy-load dos cards."""
+    try:
+        for _ in range(passos):
+            await page.evaluate("window.scrollBy(0, Math.floor(window.innerHeight * 0.85))")
+            await asyncio.sleep(espera_s)
+        await page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(0.35)
+    except Exception:
+        pass
+
+
 async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[str, Any]:
     """Abre a url_lote para extrair descrição, cidade/UF e valores reais quando disponível."""
     url_lote = item.get("url_lote")
@@ -386,7 +487,6 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         if avaliacao_real is not None:
             item["valor_mercado_referencia"] = avaliacao_real
 
-        # Procura link de PDF/edital caso exista na página do lote
         pdf_link = page.locator("a[href*='.pdf'], a[href*='edital']").first
         if await pdf_link.count():
             href_pdf = await pdf_link.get_attribute("href")
@@ -405,7 +505,7 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
 
 
 def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
-    """Filtro rápido sem LLM para poupar cota diária do Gemini."""
+    """Filtro rápido sem LLM para poupar cota diária de IA."""
     titulo = _normalizar_texto(bruto.get("titulo_lote"))
     descricao = _normalizar_texto(bruto.get("descricao_lote"))
     comitente = _normalizar_texto(bruto.get("comitente_credor"))
@@ -427,20 +527,23 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
 
 async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
     """
-    Coleta lotes via Playwright com fallback de seletores e enriquecimento na página do lote.
+    Coleta lotes via Playwright com suporte a lazy-loading, fallback de rotas por portal
+    e enriquecimento na página do lote.
     """
     _sanitizar_variaveis_ambiente()
-    urls_alvo = [
+    urls_base = [
         u.strip()
         for u in _limpar_env("SCRAPER_TARGET_URLS").split(",")
         if u.strip().startswith(("http://", "https://"))
     ]
-    if not urls_alvo:
+    if not urls_base:
         logger.info("Nenhuma URL em SCRAPER_TARGET_URLS; nenhum lote novo raspado nesta rodada.")
         return []
 
+    plano_urls = _expandir_urls_com_fallback(urls_base)
     coletados: list[dict[str, Any]] = []
     urls_vistas: set[str] = set()
+    portais_com_candidatos: set[str] = set()
     max_paginas_detalhe = min(max_itens, 8)
 
     async with async_playwright() as p:
@@ -455,27 +558,32 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
         page = await context.new_page()
         page.set_default_timeout(25000)
 
-        for url in urls_alvo:
+        for url, origem_fallback in plano_urls:
             if len(coletados) >= max_itens:
                 break
+            if origem_fallback and origem_fallback in portais_com_candidatos:
+                continue
+
             try:
                 logger.info("Acessando portal: %s", url)
                 await page.goto(url, wait_until="domcontentloaded")
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(2500)
+                await _rolar_pagina_lazy(page)
 
                 seletor_cards = (
                     "article, .lot-card, .card-lote, [data-testid='lot-card'], "
-                    ".card-auction, .auction-card, .card-item, [class*='lot-card'], [class*='card-lote']"
+                    ".card-auction, .auction-card, .card-item, .offer-card, "
+                    "[class*='lot-card'], [class*='card-lote'], [class*='LotCard'], [class*='CardLote']"
                 )
                 cards = page.locator(seletor_cards)
                 total_cards = await cards.count()
 
                 candidatos_extraidos = 0
-                for idx in range(min(total_cards, max_itens * 2)):
+                for idx in range(min(total_cards, max_itens * 3)):
                     if len(coletados) >= max_itens:
                         break
                     card = cards.nth(idx)
-                    texto_card = (await card.inner_text() or "").strip()
+                    texto_card = ((await card.inner_text()) or "").strip()
                     linhas = [ln.strip() for ln in texto_card.splitlines() if ln.strip()]
                     if not linhas or len(texto_card) < 12:
                         continue
@@ -493,7 +601,9 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                     if not href_raw and total_links > 0:
                         cand0 = await links.first.get_attribute("href")
                         if cand0:
-                            href_raw = urljoin(url, cand0.strip())
+                            abs0 = urljoin(url, cand0.strip())
+                            if _url_parece_lote(abs0, url):
+                                href_raw = abs0
 
                     if not href_raw or href_raw in urls_vistas:
                         continue
@@ -525,7 +635,7 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                 if candidatos_extraidos == 0:
                     anchors = page.locator("a[href]")
                     total_anchors = await anchors.count()
-                    for a_idx in range(min(total_anchors, 250)):
+                    for a_idx in range(min(total_anchors, 300)):
                         if len(coletados) >= max_itens:
                             break
                         anc = anchors.nth(a_idx)
@@ -563,13 +673,18 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                         )
                         candidatos_extraidos += 1
 
+                if candidatos_extraidos > 0:
+                    host_atual = (urlparse(url).netloc or "").lower().removeprefix("www.")
+                    for dom in URLS_ALTERNATIVAS_PORTAL:
+                        if host_atual == dom or host_atual.endswith(f".{dom}"):
+                            portais_com_candidatos.add(dom)
+
                 logger.info(
                     "Encontrados %d elementos candidatos em %s", candidatos_extraidos, url
                 )
             except Exception as exc:
                 logger.warning("Falha ao raspar %s: %s", url, exc)
 
-        # Abre a página de cada lote candidato para ler descrição, localidade e valores reais
         page_detalhe = await context.new_page()
         page_detalhe.set_default_timeout(20000)
         for idx_item in range(min(len(coletados), max_paginas_detalhe)):
