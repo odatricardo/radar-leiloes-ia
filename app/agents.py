@@ -25,7 +25,7 @@ from app.pdf_reader import extrair_texto_pdf_url
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 logger = logging.getLogger("radar_agents")
-client = genai.Client(api_key=settings.gemini_api_key)
+client = genai.Client(api_key=(settings.gemini_api_key or "").strip())
 
 VINHEDO_LAT = -23.0297
 VINHEDO_LON = -46.9753
@@ -46,6 +46,77 @@ TRANSIENT_MARKERS = (
     "500",
     "502",
     "504",
+)
+
+TERMOS_BLOQUEIO_ESCOPO = (
+    "sucata",
+    "irrecuperável",
+    "irrecuperavel",
+    "moto ",
+    "motocicleta",
+    "4x2",
+    "execução fiscal",
+    "execucao fiscal",
+    "trabalhista",
+    "justiça do trabalho",
+    "justica do trabalho",
+    "penhora",
+    "câmera",
+    "camera",
+    "alarme",
+    "gabinete",
+    "mesa",
+    "cadeira",
+    "aspirador",
+    "mixer",
+    "frigobar",
+    "freezer",
+    "expositora",
+    "motogerador",
+    "gerador",
+    "ponte rolante",
+    "torno",
+    "solda",
+    "peletização",
+    "peletizacao",
+)
+
+INDICADORES_RETOMADA_FINANCEIRA = (
+    "alienação fiduciária",
+    "alienacao fiduciaria",
+    "recuperado de financiamento",
+    "retomada",
+    "banco ",
+    "financeira",
+    "bv ",
+    "santander",
+    "bradesco",
+    "itaú",
+    "itau",
+    "john deere",
+    "cnh ",
+    "safra",
+    "consórcio",
+    "consorcio",
+)
+
+MODELOS_SECUNDARIOS_BLOQUEADOS = (
+    "whisper",
+    "tts",
+    "guard",
+    "embed",
+    "orpheus",
+    "audio",
+    "vision",
+    "prompt-guard",
+)
+
+MODELOS_SECUNDARIOS_PREFERIDOS = (
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "qwen/qwen3-32b",
+    "qwen/qwen3.8-27b",
 )
 
 ultima_fonte_ia: str = "nao_executado"
@@ -85,6 +156,13 @@ def listar_modelos_disponiveis() -> list[str]:
     return modelos_ativos or settings.obter_cadeia_modelos()
 
 
+def _modelo_secundario_valido(modelo_id: str) -> bool:
+    mid = (modelo_id or "").strip().lower()
+    if not mid:
+        return False
+    return not any(b in mid for b in MODELOS_SECUNDARIOS_BLOQUEADOS)
+
+
 async def _chamar_provedor_secundario_json(
     prompt: str,
     schema_cls: type[SchemaT],
@@ -92,16 +170,17 @@ async def _chamar_provedor_secundario_json(
     """Consulta provedor OpenAI-compatible quando o Gemini falha por indisponibilidade/cota."""
     global _ultimo_modelo_secundario_usado
 
-    if not settings.openai_api_key:
+    api_key = (settings.openai_api_key or "").strip()
+    if not api_key:
         logger.info("Provedor secundário não configurado (OPENAI_API_KEY ausente).")
         return None
 
-    base_url = (settings.openai_base_url or "https://api.openai.com/v1").rstrip("/")
+    base_url = (settings.openai_base_url or "https://api.groq.com/openai/v1").strip().rstrip("/")
     url = f"{base_url}/chat/completions"
     schema_json = json.dumps(schema_cls.model_json_schema(), ensure_ascii=False)
 
     headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     mensagens = [
@@ -109,16 +188,23 @@ async def _chamar_provedor_secundario_json(
             "role": "system",
             "content": (
                 "Você é um assistente técnico preciso. Responda exclusivamente com um "
-                "objeto JSON válido aderente ao schema a seguir, respeitando exatamente os "
-                "nomes e tipos dos campos:\n"
+                "objeto JSON válido aderente ao schema a seguir, preenchendo TODOS os campos "
+                "obrigatórios com tipos exatos:\n"
                 f"{schema_json}"
             ),
         },
         {"role": "user", "content": prompt},
     ]
 
-    modelos_tentativa = [settings.openai_model]
+    modelos_tentativa: list[str] = []
+    modelo_cfg = (settings.openai_model or "").strip()
+    if modelo_cfg and _modelo_secundario_valido(modelo_cfg):
+        modelos_tentativa.append(modelo_cfg)
+    for pref in MODELOS_SECUNDARIOS_PREFERIDOS:
+        if pref not in modelos_tentativa and _modelo_secundario_valido(pref):
+            modelos_tentativa.append(pref)
 
+    buscou_lista = False
     async with httpx.AsyncClient(timeout=25.0) as http:
         idx = 0
         while idx < len(modelos_tentativa):
@@ -132,10 +218,12 @@ async def _chamar_provedor_secundario_json(
             logger.info("Acionando provedor secundário (%s) em %s...", modelo_atual, base_url)
             try:
                 resp = await http.post(url, json=payload, headers=headers)
-                if resp.status_code == 404 and idx == 0:
+                if resp.status_code in (400, 404) and not buscou_lista:
+                    buscou_lista = True
                     logger.warning(
-                        "Modelo '%s' retornou 404 em %s; buscando modelos ativos...",
+                        "Modelo '%s' retornou %s em %s; buscando modelos ativos...",
                         modelo_atual,
+                        resp.status_code,
                         base_url,
                     )
                     try:
@@ -144,16 +232,8 @@ async def _chamar_provedor_secundario_json(
                         items = models_resp.json().get("data", [])
                         for item in items:
                             mid = (item.get("id") or "").strip()
-                            if (
-                                mid
-                                and mid not in modelos_tentativa
-                                and not any(
-                                    b in mid.lower()
-                                    for b in ("whisper", "tts", "guard", "embed")
-                                )
-                            ):
-                                modelos_tentativa.append(mid)
-                                break
+                            if _modelo_secundario_valido(mid) and mid not in modelos_tentativa:
+                                modelos_tentativa.insert(idx + 1, mid)
                     except Exception as list_exc:
                         logger.warning("Falha ao listar modelos em %s: %s", base_url, list_exc)
                     idx += 1
@@ -312,40 +392,35 @@ async def preparar_texto_edital(lote: LoteEntrada) -> str:
     )
 
 
-def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResultado:
-    global ultima_fonte_ia
-    ultima_fonte_ia = "regras_contingencia"
-
-    texto = f"{lote.titulo_lote} {lote.descricao_lote} {lote.comitente_credor}".lower()
-    if distancia_km > settings.raio_maximo_km:
-        return TriagemResultado(
-            aprovado_triagem=False,
-            confianca_recuperado_financiamento=0,
-            categoria=None,
-            modalidade_identificada=None,
-            motivo_descarte=(
-                f"Distância ({distancia_km:.1f} km) acima do limite de "
-                f"{settings.raio_maximo_km:.0f} km."
-            ),
-        )
-    if any(p in texto for p in ("sucata", "irrecuperável", "irrecuperavel", "moto ", "motocicleta")):
-        return TriagemResultado(
-            aprovado_triagem=False,
-            confianca_recuperado_financiamento=0,
-            categoria=None,
-            modalidade_identificada=None,
-            motivo_descarte="Categoria ou condição fora do escopo (sucata ou motocicleta).",
-        )
-
-    categoria = "caminhonete_4x4"
-    if any(p in texto for p in ("caminhão", "caminhao", "cavalo mecânico", "carreta")):
-        categoria = "caminhao"
-    elif any(
+def _detectar_categoria_permitida(texto: str) -> str | None:
+    if any(
         p in texto
-        for p in ("trator", "colheitadeira", "pulverizador", "máquina agrícola", "maquina agricola")
+        for p in (
+            "caminhão",
+            "caminhao",
+            "cavalo mecânico",
+            "cavalo mecanico",
+            "carreta",
+            "semirreboque",
+            "reboque",
+        )
     ):
-        categoria = "maquina_agricola"
-    elif any(
+        return "caminhao"
+    if any(
+        p in texto
+        for p in (
+            "trator",
+            "colheitadeira",
+            "pulverizador",
+            "máquina agrícola",
+            "maquina agricola",
+            "retroescavadeira",
+            "pá carregadeira",
+            "pa carregadeira",
+        )
+    ):
+        return "maquina_agricola"
+    if any(
         p in texto
         for p in (
             "apartamento",
@@ -356,30 +431,80 @@ def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResult
             "imóvel",
             "imovel",
             "matrícula",
+            "matricula",
+            "lote urbano",
         )
     ):
-        categoria = "imovel"
-
-    fiduciaria_ok = any(
-        k in texto
-        for k in (
-            "alienação fiduciária",
-            "alienacao fiduciaria",
-            "recuperado de financiamento",
-            "retomada",
-            "banco ",
-            "financeira",
-            "bv ",
-            "santander",
-            "bradesco",
-            "itaú",
-            "itau",
+        return "imovel"
+    if any(
+        p in texto
+        for p in (
+            "caminhonete",
+            "picape",
+            "pickup",
+            "4x4",
+            "hilux",
+            "ranger",
+            "amarok",
+            "s10",
+            "sw4",
+            "frontier",
+            "l200",
         )
-    )
+    ):
+        return "caminhonete_4x4"
+    return None
+
+
+def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResultado:
+    global ultima_fonte_ia
+    ultima_fonte_ia = "regras_contingencia"
+
+    texto = f"{lote.titulo_lote} {lote.descricao_lote} {lote.comitente_credor}".lower()
+    if distancia_km > settings.raio_maximo_km:
+        return TriagemResultado(
+            aprovado_triagem=False,
+            confianca_recuperado_financiamento=0,
+            categoria=None,
+            modalidade_identificada="",
+            motivo_descarte=(
+                f"Distância ({distancia_km:.1f} km) acima do limite de "
+                f"{settings.raio_maximo_km:.0f} km."
+            ),
+        )
+
+    if any(p in texto for p in TERMOS_BLOQUEIO_ESCOPO):
+        return TriagemResultado(
+            aprovado_triagem=False,
+            confianca_recuperado_financiamento=0,
+            categoria=None,
+            modalidade_identificada="",
+            motivo_descarte="Item fora do escopo operacional, condição restrita ou processo judicial bloqueado.",
+        )
+
+    categoria = _detectar_categoria_permitida(texto)
+    if not categoria:
+        return TriagemResultado(
+            aprovado_triagem=False,
+            confianca_recuperado_financiamento=0,
+            categoria=None,
+            modalidade_identificada="",
+            motivo_descarte="Categoria não identificada entre caminhonete_4x4, caminhao, maquina_agricola ou imovel.",
+        )
+
+    fiduciaria_ok = any(k in texto for k in INDICADORES_RETOMADA_FINANCEIRA)
+    if not fiduciaria_ok:
+        return TriagemResultado(
+            aprovado_triagem=False,
+            confianca_recuperado_financiamento=15,
+            categoria=None,
+            modalidade_identificada="",
+            motivo_descarte="Sem indício claro de alienação fiduciária ou recuperado de financiamento.",
+        )
 
     return TriagemResultado(
         aprovado_triagem=True,
-        confianca_recuperado_financiamento=80 if fiduciaria_ok else 40,
+        confianca_recuperado_financiamento=80,
         categoria=categoria,
         modalidade_identificada="Alienação Fiduciária / Retomada (fallback regras)",
         motivo_descarte=None,
@@ -393,22 +518,7 @@ def _auditoria_por_regras(lote: LoteEntrada, texto_edital: str) -> AuditoriaEdit
     base_txt = (
         f"{lote.titulo_lote} {lote.descricao_lote} {lote.comitente_credor} {texto_edital}".lower()
     )
-    fiduciaria_ok = any(
-        k in base_txt
-        for k in (
-            "alienação fiduciária",
-            "alienacao fiduciaria",
-            "recuperado de financiamento",
-            "retomada",
-            "banco ",
-            "financeira",
-            "bv ",
-            "santander",
-            "bradesco",
-            "itaú",
-            "itau",
-        )
-    )
+    fiduciaria_ok = any(k in base_txt for k in INDICADORES_RETOMADA_FINANCEIRA)
     sinistro_grave = any(
         k in base_txt
         for k in ("sinistro grande monta", "sinistro grave", "enchente", "incêndio", "incendio")
@@ -438,7 +548,7 @@ def _auditoria_por_regras(lote: LoteEntrada, texto_edital: str) -> AuditoriaEdit
         responsavel_debitos_anteriores=debitos,
         valor_debitos_repassados_estimado=0.0,
         comissao_leiloeiro_pct=5.0,
-        taxa_administrativa_estimada=1500.0,
+        taxa_administrativa_patio=1500.0,
         sinistro_ou_avaria_grave=sinistro_grave,
         restricao_documental_ou_judicial=restricao,
         resumo_clausulas=(
@@ -456,8 +566,9 @@ Você é um especialista sênior em leilões brasileiros. Avalie se o lote atend
 - Base: {settings.base_cidade}/{settings.base_uf}, raio máximo de {settings.raio_maximo_km} km (distância calculada: {distancia_km:.1f} km).
 - Categorias permitidas: caminhonete_4x4, caminhao, maquina_agricola, imovel.
 - Origem obrigatória: RECUPERADO DE FINANCIAMENTO / ALIENAÇÃO FIDUCIÁRIA (retomada bancária, financeira ou banco de montadora).
-- Rejeite: leilões judiciais trabalhistas/fiscais, sucatas, carros 4x2 comuns, motos ou distância acima de {settings.raio_maximo_km} km.
-- Se rejeitar, preencha 'motivo_descarte' de forma clara e objetiva em 1 frase.
+- Rejeite: leilões judiciais trabalhistas/fiscais, sucatas, carros 4x2 comuns, motos, equipamentos comerciais/eletrônicos/móveis fora das categorias permitidas ou distância acima de {settings.raio_maximo_km} km.
+- Se não houver indício de alienação fiduciária/retomada financeira ou se o bem não for uma das 4 categorias permitidas, reprove (aprovado_triagem=false).
+- Preencha sempre 'confianca_recuperado_financiamento' (0 a 100) e, se rejeitar, 'motivo_descarte' em 1 frase objetiva.
 
 Dados do lote:
 Leiloeiro: {lote.leiloeiro}
@@ -541,9 +652,12 @@ async def agente_4_e_5_curador(
     elif is_diamante and posse_ok and debitos_ok:
         semaforo = "VERDE"
         nivel = "DIAMANTE"
-    elif is_diamante:
+    elif is_diamante and (posse_ok or debitos_ok):
         semaforo = "AMARELO"
         nivel = "DIAMANTE"
+    elif is_diamante:
+        semaforo = "AMARELO"
+        nivel = "ATENCAO"
     elif viabilidade.margem_liquida_projetada_pct >= margem_meta and posse_ok:
         semaforo = "VERDE"
         nivel = "PADRAO"
@@ -575,9 +689,13 @@ Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
 
     if dados_curadoria is None:
         score_base = (
-            75
-            if nivel == "DIAMANTE"
-            else (60 if semaforo == "VERDE" else (45 if semaforo == "AMARELO" else 25))
+            85
+            if (nivel == "DIAMANTE" and semaforo == "VERDE")
+            else (
+                70
+                if nivel == "DIAMANTE"
+                else (60 if semaforo == "VERDE" else (45 if semaforo == "AMARELO" else 25))
+            )
         )
         resumo_exec = (
             f"Análise por regras (API em instabilidade): ROI líquido estimado de "
@@ -589,8 +707,10 @@ Alertas: {", ".join(auditoria.alertas_criticos) or "Nenhum"}
         )
     else:
         score_base = dados_curadoria.score_qualidade
-        if nivel == "DIAMANTE":
+        if nivel == "DIAMANTE" and semaforo == "VERDE":
             score_base = max(score_base, 90)
+        elif nivel == "DIAMANTE":
+            score_base = min(max(score_base, 70), 84)
         elif semaforo == "VERMELHO":
             score_base = min(score_base, 35)
         resumo_exec = dados_curadoria.resumo_executivo
