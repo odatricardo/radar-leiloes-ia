@@ -151,26 +151,44 @@ def _normalizar_dataframe(raw_itens: Any) -> pd.DataFrame:
     return df
 
 
-def filtrar_e_ordenar_oportunidades(
+def filtrar_e_ordenar_oportunidades_com_diagnostico(
     df: pd.DataFrame,
     raio_max_km: float = 500.0,
     exibir_descartados: bool = False,
-) -> pd.DataFrame:
-    """Remove registros inválidos/fora do escopo e ordena por prioridade."""
+    categoria_filtro: str = "todas",
+) -> tuple[pd.DataFrame, dict[str, int], pd.DataFrame]:
+    """Filtra, deduplica, ordena e retorna (df_final, contadores, df_descartados_motivo)."""
+    contadores: dict[str, int] = {
+        "total_carregado": 0 if df is None else len(df),
+        "apos_status": 0,
+        "apos_titulo_e_raio": 0,
+        "apos_termos_bloqueio": 0,
+        "apos_dedup": 0,
+        "apos_categoria": 0,
+    }
     if df is None or df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), contadores, pd.DataFrame()
 
     out = df.copy()
+    out["_motivo_filtro"] = ""
 
     if not exibir_descartados:
-        out = out[
-            (out["nivel_oportunidade"] != "DESCARTADO") & (out["semaforo"] != "VERMELHO")
-        ]
+        mask_status = (out["nivel_oportunidade"] != "DESCARTADO") & (out["semaforo"] != "VERMELHO")
+        out.loc[~mask_status & (out["_motivo_filtro"] == ""), "_motivo_filtro"] = (
+            "Status DESCARTADO ou VERMELHO (marque 'Exibir lotes DESCARTADOS / VERMELHOS')"
+        )
+        out = out[mask_status]
+    contadores["apos_status"] = len(out)
 
-    out = out[out["titulo_lote"].str.len() >= 5]
-
+    mask_titulo = out["titulo_lote"].str.len() >= 5
     dist_num = pd.to_numeric(out["distancia_vinhedo_km"], errors="coerce")
-    out = out[dist_num.isna() | (dist_num <= raio_max_km)]
+    mask_raio = dist_num.isna() | (dist_num <= raio_max_km)
+    mask_tr = mask_titulo & mask_raio
+    out.loc[~mask_tr & (out["_motivo_filtro"] == ""), "_motivo_filtro"] = (
+        f"Título curto (<5 chars) ou distância > {raio_max_km:.0f} km"
+    )
+    out = out[mask_tr]
+    contadores["apos_titulo_e_raio"] = len(out)
 
     cols_texto = [
         c
@@ -185,30 +203,49 @@ def filtrar_e_ordenar_oportunidades(
         mascara_bloqueio = serie_texto.apply(
             lambda txt: any(termo in txt for termo in TERMOS_FORA_EXIBICAO)
         )
-        out = out[~mascara_bloqueio]
-
-    if not out.empty:
         mascara_generico = out["titulo_lote"].str.lower().apply(
             lambda t: bool(re.fullmatch(r"\d+\s*lotes?", t.strip()))
         )
-        out = out[~mascara_generico]
+        mask_ok_texto = ~(mascara_bloqueio | mascara_generico)
+        out.loc[~mask_ok_texto & (out["_motivo_filtro"] == ""), "_motivo_filtro"] = (
+            "Contém termo fora de exibição ou título genérico"
+        )
+        out = out[mask_ok_texto]
+    contadores["apos_termos_bloqueio"] = len(out)
+
+    if not out.empty:
+        out["_chave_dedup"] = out.apply(
+            lambda r: (
+                r["url_lote"].strip().lower()
+                if r["url_lote"].strip()
+                else f"{r['titulo_lote'].lower()}|{r['cidade'].lower()}|{r['uf'].lower()}"
+            ),
+            axis=1,
+        )
+        antes_dedup = len(out)
+        out = out.drop_duplicates(subset=["_chave_dedup"], keep="first").drop(columns=["_chave_dedup"])
+        if len(out) < antes_dedup:
+            contadores["deduplicados_removidos"] = antes_dedup - len(out)
+    contadores["apos_dedup"] = len(out)
+
+    if categoria_filtro != "todas" and not out.empty:
+        mask_cat = out["categoria"] == categoria_filtro
+        out = out[mask_cat]
+    contadores["apos_categoria"] = len(out)
+
+    df_diagnostico = df.copy()
+    if not out.empty:
+        idxs_mantidos = set(out.index)
+        df_diagnostico["_status_exibicao"] = df_diagnostico.index.map(
+            lambda i: "EXIBIDO" if i in idxs_mantidos else "OCULTADO/FILTRADO"
+        )
+    else:
+        df_diagnostico["_status_exibicao"] = "OCULTADO/FILTRADO"
 
     if out.empty:
-        return out
+        return out, contadores, df_diagnostico
 
-    out["_chave_dedup"] = out.apply(
-        lambda r: (
-            r["url_lote"].strip().lower()
-            if r["url_lote"].strip()
-            else f"{r['titulo_lote'].lower()}|{r['cidade'].lower()}|{r['uf'].lower()}"
-        ),
-        axis=1,
-    )
-    out = out.drop_duplicates(subset=["_chave_dedup"], keep="first").drop(columns=["_chave_dedup"])
-
-    if out.empty:
-        return out
-
+    out = out.drop(columns=["_motivo_filtro"], errors="ignore")
     out["_ord_nivel"] = out["nivel_oportunidade"].map(PESO_NIVEL).fillna(9)
     out["_ord_sem"] = out["semaforo"].map(PESO_SEMAFORO).fillna(9)
     out["_ord_score"] = pd.to_numeric(out["score_qualidade"], errors="coerce").fillna(0)
@@ -219,7 +256,7 @@ def filtrar_e_ordenar_oportunidades(
         ascending=[True, True, False, False],
     ).drop(columns=["_ord_nivel", "_ord_sem", "_ord_score", "_ord_margem"])
 
-    return out.reset_index(drop=True)
+    return out.reset_index(drop=True), contadores, df_diagnostico
 
 
 def _formatar_moeda(valor: Any) -> str:
@@ -288,13 +325,12 @@ def main() -> None:
             st.caption(f"Última fonte: {ag.ultima_fonte_ia}")
 
     df_base = _normalizar_dataframe(st.session_state.get("oportunidades_raw", []))
-    df_filtrado = filtrar_e_ordenar_oportunidades(
+    df_filtrado, contadores, df_diagnostico = filtrar_e_ordenar_oportunidades_com_diagnostico(
         df_base,
         raio_max_km=float(raio_filtro),
         exibir_descartados=exibir_descartados,
+        categoria_filtro=categoria_filtro,
     )
-    if categoria_filtro != "todas" and not df_filtrado.empty:
-        df_filtrado = df_filtrado[df_filtrado["categoria"] == categoria_filtro].reset_index(drop=True)
 
     col1, col2, col3, col4 = st.columns(4)
     total_exibidos = len(df_filtrado)
@@ -316,6 +352,27 @@ def main() -> None:
     col2.metric("Nível DIAMANTE", total_diamante)
     col3.metric("Semáforo VERDE", total_verdes)
     col4.metric("Margem Líquida Média", f"{margem_media:.1f}%")
+
+    with st.expander("🩺 Diagnóstico de Registros do Banco vs. Filtros"):
+        st.json(contadores)
+        if not df_diagnostico.empty:
+            cols_diag = [
+                c
+                for c in (
+                    "_status_exibicao",
+                    "lote_id",
+                    "titulo_lote",
+                    "categoria",
+                    "cidade",
+                    "uf",
+                    "distancia_vinhedo_km",
+                    "semaforo",
+                    "nivel_oportunidade",
+                    "margem_liquida_projetada_pct",
+                )
+                if c in df_diagnostico.columns
+            ]
+            st.dataframe(df_diagnostico[cols_diag], use_container_width=True, hide_index=True)
 
     st.divider()
 
