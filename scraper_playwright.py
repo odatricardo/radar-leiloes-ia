@@ -2,7 +2,9 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 from playwright.async_api import async_playwright
 
@@ -49,11 +51,152 @@ INDICADORES_FIDUCIARIA = (
     "safra",
 )
 
+PADROES_URL_IGNORADA = (
+    "/login",
+    "/cadastro",
+    "/minha-conta",
+    "/contato",
+    "/institucional",
+    "/quem-somos",
+    "/termos",
+    "/privacidade",
+    "/ajuda",
+    "/faq",
+    "javascript:",
+    "mailto:",
+    "tel:",
+)
+
+PADROES_URL_LOTE = (
+    "lote",
+    "item",
+    "bem",
+    "veiculo",
+    "imovel",
+    "leilao",
+    "oferta",
+    "detalhe",
+    "asset",
+    "lot",
+)
+
+
+def _limpar_env(nome: str, padrao: str = "") -> str:
+    valor = os.getenv(nome, padrao)
+    if not isinstance(valor, str):
+        return padrao
+    return valor.strip().strip('"').strip("'")
+
+
+def _sanitizar_variaveis_ambiente() -> None:
+    """Remove espaços ou quebras de linha acidentais em variáveis sensíveis."""
+    chaves_env = (
+        "GEMINI_API_KEY",
+        "GEMINI_MODEL_FAST",
+        "GEMINI_MODEL_AUDIT",
+        "GEMINI_FALLBACK_MODELS",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_BASE_URL",
+        "DATABASE_URL",
+        "GOOGLE_MAPS_API_KEY",
+    )
+    for chave in chaves_env:
+        atual = os.environ.get(chave)
+        if isinstance(atual, str) and atual != atual.strip():
+            os.environ[chave] = atual.strip()
+
+    for attr in ("gemini_api_key", "openai_api_key", "openai_base_url", "openai_model"):
+        val = getattr(settings, attr, None)
+        if isinstance(val, str):
+            setattr(settings, attr, val.strip())
+
 
 def _normalizar_texto(texto: str | None) -> str:
     if not texto:
         return ""
     return " ".join(texto.lower().split())
+
+
+def _extrair_valores_brl(texto: str) -> list[float]:
+    matches = re.findall(r"R\$\s*([\d\.]+,\d{2})", texto)
+    valores: list[float] = []
+    for bruto in matches:
+        try:
+            numero = float(bruto.replace(".", "").replace(",", "."))
+            if numero >= 1000.0:
+                valores.append(numero)
+        except ValueError:
+            continue
+    return valores
+
+
+def _escolher_titulo_card(linhas: list[str], href: str) -> str:
+    candidatas = [
+        ln
+        for ln in linhas
+        if len(ln) >= 6
+        and not ln.lower().startswith(("r$", "lance", "ver lote", "detalhes", "saiba mais"))
+        and not re.fullmatch(r"\d+\s*lotes?", ln.strip().lower())
+    ]
+    if candidatas:
+        # Prioriza linha com nome de veículo, máquina, imóvel ou marca conhecida
+        for ln in candidatas:
+            if any(
+                k in ln.lower()
+                for k in (
+                    "hilux",
+                    "ranger",
+                    "amarok",
+                    "s10",
+                    "sw4",
+                    "caminhao",
+                    "caminhão",
+                    "scania",
+                    "volvo",
+                    "mercedes",
+                    "iveco",
+                    "trator",
+                    "colheitadeira",
+                    "apartamento",
+                    "casa",
+                    "terreno",
+                    "galpao",
+                    "galpão",
+                    "imovel",
+                    "imóvel",
+                    "veiculo",
+                    "veículo",
+                )
+            ):
+                return ln[:180]
+        return candidatas[0][:180]
+
+    if linhas:
+        return linhas[0][:180]
+
+    parsed = urlparse(href)
+    slug = parsed.path.rstrip("/").split("/")[-1].replace("-", " ").replace("_", " ").strip()
+    return (slug[:180] if slug else "Lote em Leilão")
+
+
+def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
+    if not url_candidata:
+        return False
+    baixa = url_candidata.lower().strip()
+    if baixa.startswith(PADROES_URL_IGNORADA) or baixa == "#" or baixa.endswith("/#"):
+        return False
+    if baixa.rstrip("/") == url_base.rstrip("/").lower():
+        return False
+    parsed = urlparse(url_candidata)
+    caminho = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    if any(p in caminho or p in query for p in PADROES_URL_LOTE):
+        return True
+    # Aceita caminhos profundos com ID numérico no final (ex.: /leilao/12345 ou /123456)
+    if re.search(r"/\d{3,}/?$", caminho):
+        return True
+    return False
 
 
 def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
@@ -79,19 +222,21 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
 
 async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
     """
-    Coleta lotes via Playwright.
-    Adapte URLs e seletores para os portais-alvo do seu repositório.
+    Coleta lotes via Playwright com fallback de seletores de cards e links de lotes.
     """
+    _sanitizar_variaveis_ambiente()
     urls_alvo = [
         u.strip()
-        for u in os.getenv("SCRAPER_TARGET_URLS", "").split(",")
-        if u.strip()
+        for u in _limpar_env("SCRAPER_TARGET_URLS").split(",")
+        if u.strip().startswith(("http://", "https://"))
     ]
     if not urls_alvo:
         logger.info("Nenhuma URL em SCRAPER_TARGET_URLS; nenhum lote novo raspado nesta rodada.")
         return []
 
     coletados: list[dict[str, Any]] = []
+    urls_vistas: set[str] = set()
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
@@ -110,42 +255,114 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
             try:
                 logger.info("Acessando portal: %s", url)
                 await page.goto(url, wait_until="domcontentloaded")
-                await page.wait_for_timeout(2500)
+                await page.wait_for_timeout(3000)
 
-                # Exemplo genérico de cards; ajuste conforme o HTML real do portal
-                cards = page.locator("article, .lot-card, .card-lote, [data-testid='lot-card']")
+                seletor_cards = (
+                    "article, .lot-card, .card-lote, [data-testid='lot-card'], "
+                    ".card-auction, .auction-card, .card-item, [class*='lot-card'], [class*='card-lote']"
+                )
+                cards = page.locator(seletor_cards)
                 total_cards = await cards.count()
-                logger.info("Encontrados %d elementos candidatos em %s", total_cards, url)
 
-                for idx in range(min(total_cards, max_itens - len(coletados))):
+                candidatos_extraidos = 0
+                for idx in range(min(total_cards, max_itens * 2)):
+                    if len(coletados) >= max_itens:
+                        break
                     card = cards.nth(idx)
                     texto_card = (await card.inner_text() or "").strip()
                     linhas = [ln.strip() for ln in texto_card.splitlines() if ln.strip()]
-                    if not linhas:
+                    if not linhas or len(texto_card) < 12:
                         continue
 
-                    titulo = linhas[0][:180]
-                    link_el = card.locator("a").first
-                    href = await link_el.get_attribute("href") if await link_el.count() else url
-                    if href and href.startswith("/"):
-                        base = url.split("/")[0] + "//" + url.split("/")[2]
-                        href = f"{base}{href}"
+                    href_raw = ""
+                    links = card.locator("a[href]")
+                    total_links = await links.count()
+                    for l_idx in range(total_links):
+                        cand = await links.nth(l_idx).get_attribute("href")
+                        if cand:
+                            abs_cand = urljoin(url, cand.strip())
+                            if _url_parece_lote(abs_cand, url):
+                                href_raw = abs_cand
+                                break
+                    if not href_raw and total_links > 0:
+                        cand0 = await links.first.get_attribute("href")
+                        if cand0:
+                            href_raw = urljoin(url, cand0.strip())
+
+                    if not href_raw or href_raw in urls_vistas:
+                        continue
+                    urls_vistas.add(href_raw)
+
+                    titulo = _escolher_titulo_card(linhas, href_raw)
+                    valores = _extrair_valores_brl(texto_card)
+                    lance_estimado = valores[0] if valores else 100000.0
+                    mercado_estimado = (
+                        max(valores) * 1.45 if valores and max(valores) > 0 else 160000.0
+                    )
 
                     coletados.append(
                         {
-                            "leiloeiro": url.split("/")[2] if "://" in url else "Portal Leilão",
+                            "leiloeiro": urlparse(url).netloc or "Portal Leilão",
                             "comitente_credor": "Banco / Financeira (verificar edital)",
                             "numero_lote": str(idx + 1),
-                            "url_lote": href or url,
+                            "url_lote": href_raw,
                             "url_edital_pdf": None,
                             "titulo_lote": titulo,
                             "descricao_lote": texto_card[:1500],
                             "cidade": "Campinas",
                             "uf": "SP",
-                            "lance_atual": 100000.0,
-                            "valor_mercado_referencia": 160000.0,
+                            "lance_atual": lance_estimado,
+                            "valor_mercado_referencia": mercado_estimado,
                         }
                     )
+                    candidatos_extraidos += 1
+
+                # Fallback por links quando o portal não usa cards estruturados padrão
+                if candidatos_extraidos == 0:
+                    anchors = page.locator("a[href]")
+                    total_anchors = await anchors.count()
+                    for a_idx in range(min(total_anchors, 250)):
+                        if len(coletados) >= max_itens:
+                            break
+                        anc = anchors.nth(a_idx)
+                        href_raw = await anc.get_attribute("href")
+                        if not href_raw:
+                            continue
+                        abs_href = urljoin(url, href_raw.strip())
+                        if not _url_parece_lote(abs_href, url) or abs_href in urls_vistas:
+                            continue
+
+                        texto_anc = " ".join(((await anc.inner_text()) or "").split()).strip()
+                        if len(texto_anc) < 8:
+                            continue
+
+                        urls_vistas.add(abs_href)
+                        valores = _extrair_valores_brl(texto_anc)
+                        lance_estimado = valores[0] if valores else 100000.0
+                        mercado_estimado = (
+                            max(valores) * 1.45 if valores and max(valores) > 0 else 160000.0
+                        )
+
+                        coletados.append(
+                            {
+                                "leiloeiro": urlparse(url).netloc or "Portal Leilão",
+                                "comitente_credor": "Banco / Financeira (verificar edital)",
+                                "numero_lote": str(candidatos_extraidos + 1),
+                                "url_lote": abs_href,
+                                "url_edital_pdf": None,
+                                "titulo_lote": texto_anc[:180],
+                                "descricao_lote": texto_anc[:1500],
+                                "cidade": "Campinas",
+                                "uf": "SP",
+                                "lance_atual": lance_estimado,
+                                "valor_mercado_referencia": mercado_estimado,
+                            }
+                        )
+                        candidatos_extraidos += 1
+
+                logger.info(
+                    "Encontrados %d elementos candidatos em %s", candidatos_extraidos, url
+                )
             except Exception as exc:
                 logger.warning("Falha ao raspar %s: %s", url, exc)
 
@@ -155,6 +372,7 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
 
 
 async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: float = 2.5) -> None:
+    _sanitizar_variaveis_ambiente()
     brutos = await coletar_lotes_exemplo(max_itens=max_lotes * 4)
     if not brutos:
         logger.info("Pipeline encerrado sem novos lotes para avaliar.")
@@ -194,13 +412,14 @@ async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: floa
         lote_obj.distancia_vinhedo_km = dist_km
         avaliados += 1
         logger.info(
-            "[%d/%d] Avaliando lote: %s (%s/%s - %.1f km)",
+            "[%d/%d] Avaliando lote: %s (%s/%s - %.1f km) -> %s",
             avaliados,
             max_lotes,
             lote_obj.titulo_lote,
             lote_obj.cidade,
             lote_obj.uf,
             dist_km,
+            lote_obj.url_lote,
         )
 
         try:
@@ -215,7 +434,6 @@ async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: floa
                 )
         except Exception as exc:
             logger.error("Erro ao avaliar lote '%s': %s", lote_obj.titulo_lote, exc)
-            # Em caso de 503 ou 429, interrompe o lote atual para não queimar o restante da cota
             msg = str(exc)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg:
                 logger.warning("Instabilidade ou cota atingida; encerrando rodada com segurança.")
@@ -227,11 +445,12 @@ async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: floa
 
 
 def main() -> None:
+    _sanitizar_variaveis_ambiente()
     parser = argparse.ArgumentParser(description="Coletor automático do Radar Leilões IA")
     parser.add_argument(
         "--max-lotes",
         type=int,
-        default=int(os.getenv("MAX_LOTES_POR_EXECUCAO", "3")),
+        default=int(_limpar_env("MAX_LOTES_POR_EXECUCAO", "3") or "3"),
         help="Máximo de lotes enviados para a IA por execução",
     )
     parser.add_argument(
