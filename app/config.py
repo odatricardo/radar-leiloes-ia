@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     gemini_api_key: str
     gemini_model_fast: str = "gemini-3.8-flash"
     gemini_model_audit: str = "gemini-3.8-flash"
-    gemini_fallback_models: str = "gemini-3.8-flash-lite"
+    gemini_fallback_models: str = ""
 
     database_url: str
     google_maps_api_key: str | None = None
