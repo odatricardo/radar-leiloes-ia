@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from playwright.async_api import Page, async_playwright
 
@@ -444,6 +444,12 @@ def _titulo_parece_generico(titulo: str) -> bool:
     return False
 
 
+def _limpar_url_lote(url: str) -> str:
+    """Remove parâmetros de rastreamento/paginação (?...) para evitar lotes duplicados."""
+    parsed = urlparse(url.strip())
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+
+
 def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
     if not url_candidata:
         return False
@@ -697,14 +703,14 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                     for l_idx in range(total_links):
                         cand = await links.nth(l_idx).get_attribute("href")
                         if cand:
-                            abs_cand = urljoin(url, cand.strip())
+                            abs_cand = _limpar_url_lote(urljoin(url, cand.strip()))
                             if _url_parece_lote(abs_cand, url):
                                 href_raw = abs_cand
                                 break
                     if not href_raw and total_links > 0:
                         cand0 = await links.first.get_attribute("href")
                         if cand0:
-                            abs0 = urljoin(url, cand0.strip())
+                            abs0 = _limpar_url_lote(urljoin(url, cand0.strip()))
                             if _url_parece_lote(abs0, url):
                                 href_raw = abs0
 
@@ -745,7 +751,7 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
                         href_raw = await anc.get_attribute("href")
                         if not href_raw:
                             continue
-                        abs_href = urljoin(url, href_raw.strip())
+                        abs_href = _limpar_url_lote(urljoin(url, href_raw.strip()))
                         if not _url_parece_lote(abs_href, url) or abs_href in urls_vistas:
                             continue
 
