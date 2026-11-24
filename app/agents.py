@@ -280,7 +280,7 @@ def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResult
     if distancia_km > settings.raio_maximo_km:
         return TriagemResultado(
             aprovado_triagem=False,
-            confianca_recuperado_financiamento=0.0,
+            confianca_recuperado_financiamento=0,
             categoria=None,
             modalidade_identificada=None,
             motivo_descarte=(
@@ -291,7 +291,7 @@ def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResult
     if any(p in texto for p in ("sucata", "irrecuperável", "irrecuperavel", "moto ", "motocicleta")):
         return TriagemResultado(
             aprovado_triagem=False,
-            confianca_recuperado_financiamento=0.0,
+            confianca_recuperado_financiamento=0,
             categoria=None,
             modalidade_identificada=None,
             motivo_descarte="Categoria ou condição fora do escopo (sucata ou motocicleta).",
@@ -339,7 +339,7 @@ def _triagem_por_regras(lote: LoteEntrada, distancia_km: float) -> TriagemResult
 
     return TriagemResultado(
         aprovado_triagem=True,
-        confianca_recuperado_financiamento=0.8 if fiduciaria_ok else 0.4,
+        confianca_recuperado_financiamento=80 if fiduciaria_ok else 40,
         categoria=categoria,
         modalidade_identificada="Alienação Fiduciária / Retomada (fallback regras)",
         motivo_descarte=None,
