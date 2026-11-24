@@ -73,12 +73,11 @@ ESTADOS_POR_UF: dict[str, str] = {
     "RS": "Rio Grande do Sul",
     "RO": "Rondônia",
     "RR": "Roraima",
-    "SC": "São Paulo",
+    "SC": "Santa Catarina",
     "SP": "São Paulo",
     "SE": "Sergipe",
     "TO": "Tocantins",
 }
-ESTADOS_POR_UF["SC"] = "Santa Catarina"
 
 TERMOS_ESCOPO_ATIVOS = (
     "caminhonete",
@@ -112,7 +111,7 @@ TERMOS_ESCOPO_ATIVOS = (
     "galpão",
 )
 
-PALAVRAS_BLOQUEIO = (
+BLOQUEIO_DURO = (
     "sucata",
     "irrecuperavel",
     "irrecuperável",
@@ -126,6 +125,14 @@ PALAVRAS_BLOQUEIO = (
     "justica do trabalho",
     "justiça do trabalho",
     "judicial online",
+    "entrar ou abrir conta",
+    "abrir conta",
+    "ver todos os eventos",
+    "ver todos os lotes",
+    "minha conta",
+)
+
+RUIDO_SECUNDARIO = (
     "câmera",
     "camera",
     "alarme",
@@ -156,11 +163,6 @@ PALAVRAS_BLOQUEIO = (
     "instrumentos de percussao",
     "cama elástica",
     "cama elastica",
-    "entrar ou abrir conta",
-    "abrir conta",
-    "ver todos os eventos",
-    "ver todos os lotes",
-    "minha conta",
 )
 
 INDICADORES_FIDUCIARIA = (
@@ -493,7 +495,6 @@ def _extrair_cidade_uf(
             if len(cidade_fmt) >= 3:
                 return cidade_fmt[:80], uf_cand
 
-    # Fallback para rótulos separados: "UF: SP" / "Cidade: Ribeirão Preto"
     uf_detectada = padrao_uf if padrao_uf in UFS_BRASIL else None
     if not uf_detectada:
         m_uf = re.search(
@@ -764,16 +765,21 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
     if _titulo_parece_generico(bruto.get("titulo_lote", "")):
         return False, "Título genérico ou de navegação/login/categoria."
 
-    for termo in PALAVRAS_BLOQUEIO:
+    for termo in BLOQUEIO_DURO:
         if termo in combinado:
             return False, f"Bloqueado no pré-filtro por termo: '{termo}'."
+
+    tem_ativo_escopo = _tem_termo_escopo(f"{titulo} {combinado}")
+    if not tem_ativo_escopo:
+        for termo in RUIDO_SECUNDARIO:
+            if termo in combinado:
+                return False, f"Bloqueado no pré-filtro por termo: '{termo}'."
 
     cidade = (bruto.get("cidade") or "").strip()
     if not titulo or not cidade or cidade.lower() in {"não informada", "nao informada"}:
         return False, "Dados mínimos ausentes (título ou localização)."
 
     tem_indicio_fiduciaria = any(ind in combinado for ind in INDICADORES_FIDUCIARIA)
-    tem_ativo_escopo = _tem_termo_escopo(combinado)
     if not tem_indicio_fiduciaria and not (bruto.get("_enriquecido") and tem_ativo_escopo):
         return False, "Sem indício claro de alienação fiduciária / retomada financeira."
 
@@ -974,12 +980,11 @@ async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: floa
         logger.info("Pipeline encerrado sem novos lotes para avaliar.")
         return
 
-    # Pré-enriquece candidatos promissores sem localização antes do pré-filtro (limite de 6 páginas)
     candidatos_sem_loc: list[dict[str, Any]] = []
     for bruto in brutos:
         combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')}"
         cidade_atual = (bruto.get("cidade") or "").strip().lower()
-        bloqueado_direto = any(termo in _normalizar_texto(combinado) for termo in PALAVRAS_BLOQUEIO)
+        bloqueado_direto = any(termo in _normalizar_texto(combinado) for termo in BLOQUEIO_DURO)
         if (
             not _titulo_parece_generico(bruto.get("titulo_lote", ""))
             and not bloqueado_direto
