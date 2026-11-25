@@ -10,7 +10,7 @@ on:
       max_lotes:
         description: "Máximo de lotes avaliados pela IA nesta execução"
         required: false
-        default: "3"
+        default: "15"
 
 concurrency:
   group: radar-leiloes-coleta
@@ -19,7 +19,7 @@ concurrency:
 jobs:
   coletar-e-auditar:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout do repositório
@@ -55,6 +55,6 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
           SCRAPER_TARGET_URLS: ${{ secrets.SCRAPER_TARGET_URLS }}
-          MAX_LOTES_POR_EXECUCAO: ${{ github.event.inputs.max_lotes || '3' }}
+          MAX_LOTES_POR_EXECUCAO: ${{ github.event.inputs.max_lotes || '15' }}
         run: |
-          python scraper_playwright.py --max-lotes "$MAX_LOTES_POR_EXECUCAO" --delay 2.5
+          python scraper_playwright.py --max-lotes "$MAX_LOTES_POR_EXECUCAO" --delay 1.5
