@@ -50,36 +50,6 @@ UFS_BRASIL = {
     "TO",
 }
 
-ESTADOS_POR_UF: dict[str, str] = {
-    "AC": "Acre",
-    "AL": "Alagoas",
-    "AP": "Amapá",
-    "AM": "Amazonas",
-    "BA": "Bahia",
-    "CE": "Ceará",
-    "DF": "Distrito Federal",
-    "ES": "Espírito Santo",
-    "GO": "Goiás",
-    "MA": "Maranhão",
-    "MT": "Mato Grosso",
-    "MS": "Mato Grosso do Sul",
-    "MG": "Minas Gerais",
-    "PA": "Pará",
-    "PB": "Paraíba",
-    "PR": "Paraná",
-    "PE": "Pernambuco",
-    "PI": "Piauí",
-    "RJ": "Rio de Janeiro",
-    "RN": "Rio Grande do Norte",
-    "RS": "Rio Grande do Sul",
-    "RO": "Rondônia",
-    "RR": "Roraima",
-    "SC": "Santa Catarina",
-    "SP": "São Paulo",
-    "SE": "Sergipe",
-    "TO": "Tocantins",
-}
-
 TERMOS_ESCOPO_ATIVOS = (
     "caminhonete",
     "picape",
@@ -305,7 +275,6 @@ def _limpar_env(nome: str, padrao: str = "") -> str:
 
 
 def _sanitizar_variaveis_ambiente() -> None:
-    """Remove espaços ou quebras de linha acidentais em variáveis sensíveis."""
     chaves_env = (
         "GEMINI_API_KEY",
         "GEMINI_MODEL_FAST",
@@ -340,7 +309,6 @@ def _tem_termo_escopo(texto: str) -> bool:
 
 
 def _formatar_nome_cidade(bruto: str) -> str:
-    """Normaliza 'BARRETOS' ou 'são paulo' para 'Barretos' ou 'São Paulo'."""
     limpo = " ".join(bruto.strip(" ,;-–/([)").split())
     minusculas_conectivos = {"de", "da", "do", "das", "dos", "e"}
     partes = limpo.lower().split(" ")
@@ -368,7 +336,7 @@ def _parse_moeda_brl(bruto: str) -> float | None:
 
 
 def _extrair_valores_brl(texto: str) -> list[float]:
-    matches = re.findall(r"R\$\s*[\d\.]+(?:,\d{2})?", texto)
+    matches = re.findall(r"(?:R\$\s*)?(\d{1,3}(?:\.\d{3})+,\d{2}|R\$\s*\d{1,3}(?:\.\d{3})+)", texto)
     valores: list[float] = []
     for bruto in matches:
         val = _parse_moeda_brl(bruto)
@@ -377,65 +345,38 @@ def _extrair_valores_brl(texto: str) -> list[float]:
     return valores
 
 
-def _multiplicador_mercado_por_texto(texto: str) -> float:
-    baixa = (texto or "").lower()
-    if any(
-        k in baixa
-        for k in (
-            "apto",
-            "apartamento",
-            "casa",
-            "terreno",
-            "galpão",
-            "galpao",
-            "imóvel",
-            "imovel",
-            "matrícula",
-            "matricula",
-        )
-    ):
-        return 1.65
-    return 1.55
-
-
 def _garantir_valores_coerentes(
     lance: float | None, avaliacao: float | None, contexto_texto: str = ""
-) -> tuple[float, float]:
-    """Garante que lance e valor de mercado fiquem positivos e coerentes (avaliação > lance)."""
-    mult = _multiplicador_mercado_por_texto(contexto_texto)
-
+) -> tuple[float, float, bool]:
+    """
+    Retorna (lance_ok, aval_ok, valor_real_encontrado).
+    Nunca inventa R$ 100.000 / R$ 165.000 quando o portal não traz valor real.
+    """
     lance_ok = float(lance) if (lance is not None and lance >= 500.0) else None
     aval_ok = float(avaliacao) if (avaliacao is not None and avaliacao >= 500.0) else None
 
     if lance_ok is None and aval_ok is None:
-        lance_ok = 100000.0
-        aval_ok = round(lance_ok * mult, 2)
-    elif lance_ok is not None and (aval_ok is None or aval_ok <= lance_ok):
-        aval_ok = round(lance_ok * mult, 2)
+        # Sentinela conservador não-inflado quando o portal não expõe valores numéricos legíveis
+        return 1000.0, 1050.0, False
+
+    if lance_ok is not None and (aval_ok is None or aval_ok <= lance_ok):
+        aval_ok = round(lance_ok * 1.35, 2)
     elif aval_ok is not None and lance_ok is None:
-        lance_ok = round(aval_ok * 0.55, 2)
+        lance_ok = round(aval_ok * 0.65, 2)
 
-    # Trava distorções extremas caso um valor de outra seção/praça fuja muito do lance
-    if lance_ok > 0 and aval_ok > lance_ok * 3.0:
-        aval_ok = round(lance_ok * mult, 2)
+    if lance_ok > 0 and aval_ok > lance_ok * 3.5:
+        aval_ok = round(lance_ok * 1.45, 2)
 
-    return round(lance_ok, 2), round(aval_ok, 2)
+    return round(lance_ok, 2), round(aval_ok, 2), True
 
 
-def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
-    """
-    Retorna (lance_atual_ou_minimo, valor_avaliacao_ou_mercado) sempre com valores coerentes.
-    Suporta rótulos como 'Lance mínimo', 'Último lance', 'Avaliação' e 'Inicial: R$ ...' (1ª/2ª praça),
-    priorizando o menor valor de lance/praça quando múltiplos valores aparecem sem rótulo explícito.
-    """
+def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float, bool]:
     lance: float | None = None
     avaliacao: float | None = None
 
-    # Se houver "Último lance" ou "Lance mínimo" explícito, usa o menor encontrado entre os rótulos
     lances_explicitos: list[float] = []
     padroes_lance = (
-        r"(?:[uú]ltimo\s*lance|lance\s*(?:m[ií]nimo(?:\s*atual)?|atual))[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
-        r"(?:valor\s*(?:do\s*lance|m[ií]nimo))[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:[uú]ltimo\s*lance|lance\s*(?:m[ií]nimo(?:\s*atual)?|atual)|valor\s*(?:do\s*lance|m[ií]nimo))[^\dR$]{0,35}((?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{2})?)",
     )
     for pat in padroes_lance:
         for m in re.finditer(pat, texto, flags=re.IGNORECASE):
@@ -444,7 +385,7 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
                 lances_explicitos.append(v)
 
     padroes_avaliacao = (
-        r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)[^\dR$]{0,35}((?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{2})?)",
     )
     for pat in padroes_avaliacao:
         m = re.search(pat, texto, flags=re.IGNORECASE)
@@ -455,7 +396,7 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
 
     iniciais_vals: list[float] = []
     for m_ini in re.finditer(
-        r"\binicial\s*[:\-–]?\s*(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"\binicial\s*[:\-–]?\s*((?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{2})?)",
         texto,
         flags=re.IGNORECASE,
     ):
@@ -473,8 +414,6 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
         if avaliacao is None and maior_ini > lance:
             avaliacao = maior_ini
     elif todos:
-        # Quando há múltiplos valores sem rótulo claro (ex.: 1ª e 2ª praça), prioriza o menor valor
-        # como lance atual para não confundir lance de 1ª praça com lance atual.
         lance = min(todos)
 
     if avaliacao is None:
@@ -489,7 +428,6 @@ def _cidade_parece_ruido(cidade_bruta: str) -> bool:
     baixa = " ".join(cidade_bruta.lower().strip().split())
     if len(baixa) < 3 or len(baixa.split()) > 5:
         return True
-    # Evita capturar áreas/metragens ou propriedades como nome de cidade (ex.: "72 ha - sítio...")
     if re.search(r"\b\d+(?:[.,]\d+)?\s*(?:ha|hectares?|m2|m²|km2|km²|alqueires?)\b", baixa):
         return True
     if any(
@@ -557,11 +495,6 @@ def _cidade_parece_ruido(cidade_bruta: str) -> bool:
 def _extrair_cidade_uf(
     texto: str, padrao_cidade: str = "Não informada", padrao_uf: str = "XX"
 ) -> tuple[str, str]:
-    """
-    Extrai (cidade, uf) priorizando o último segmento de 'Bairro/Local - Cidade - UF'
-    (ex.: 'Aparecidinha - Sorocaba - SP' -> 'Sorocaba', 'SP') e evitando capturar
-    metragens/propriedades como '72 ha - Sítio das Primaveras'.
-    """
     janelas: list[str] = []
     for kw in (
         "localização",
@@ -587,7 +520,6 @@ def _extrair_cidade_uf(
             janelas.append(texto[inicio:fim])
     janelas.append(texto[:6000])
 
-    # Captura sequências como 'Aparecidinha - Sorocaba - SP' ou 'Brotas - SP'
     regex_cadeia = re.compile(
         r"(?:^|[\s:;(\[|])([A-Za-zÀ-ÿ0-9\s'\-\.]{2,90}?)\s*(?:/|-|–)\s*([A-Za-z]{2})(?=$|[\s.,;)\]|])",
         flags=re.MULTILINE,
@@ -600,9 +532,11 @@ def _extrair_cidade_uf(
             if uf_cand not in UFS_BRASIL:
                 continue
 
-            # Divide cadeias encadeadas (ex.: "Área Industrial - Aparecidinha - Sorocaba")
-            # e testa do segmento mais próximo da UF para trás.
-            partes_cadeia = [p.strip(" ,;-–/([|)") for p in re.split(r"\s*(?:/|-|–)\s*", cadeia_bruta) if p.strip()]
+            partes_cadeia = [
+                p.strip(" ,;-–/([|)")
+                for p in re.split(r"\s*(?:/|-|–)\s*", cadeia_bruta)
+                if p.strip()
+            ]
             for parte in reversed(partes_cadeia):
                 if _cidade_parece_ruido(parte):
                     continue
@@ -610,7 +544,6 @@ def _extrair_cidade_uf(
                 if len(cidade_fmt) >= 3:
                     return cidade_fmt[:80], uf_cand
 
-    # Fallback para 'Cidade (SP)'
     regex_paren = re.compile(
         r"(?:^|[\s:;(\[|])([A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*\(\s*([A-Za-z]{2})\s*\)",
         flags=re.MULTILINE,
@@ -717,7 +650,6 @@ def _titulo_parece_generico(titulo: str) -> bool:
 
 
 def _limpar_url_lote(url: str) -> str:
-    """Remove parâmetros de rastreamento/paginação (?...) para evitar lotes duplicados."""
     parsed = urlparse(url.strip())
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
 
@@ -741,11 +673,6 @@ def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
 
 
 def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | None]]:
-    """
-    Retorna pares (url_para_acessar, categoria_hint) garantindo que todas as rotas
-    de categoria do portal (veículos, caminhões, imóveis) sejam percorridas, e não
-    puladas após a primeira página retornar candidatos.
-    """
     plano: list[tuple[str, str | None]] = []
     vistas: set[str] = set()
 
@@ -763,7 +690,6 @@ def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | N
                 for alt in alternativas:
                     if alt not in vistas:
                         vistas.add(alt)
-                        # Marca apenas como categoria complementar (nunca bloqueia outras categorias do mesmo domínio)
                         plano.append((alt, None))
                 break
 
@@ -771,7 +697,6 @@ def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | N
 
 
 async def _rolar_pagina_lazy(page: Page, passos: int = 5, espera_s: float = 0.75) -> None:
-    """Rola a página em etapas para disparar carregamento lazy-load dos cards."""
     try:
         for _ in range(passos):
             await page.evaluate("window.scrollBy(0, Math.floor(window.innerHeight * 0.85))")
@@ -783,7 +708,6 @@ async def _rolar_pagina_lazy(page: Page, passos: int = 5, espera_s: float = 0.75
 
 
 def _extrair_sinais_operacionais(texto: str) -> str:
-    """Extrai trechos curtos sobre chave, posse, desocupação ou retomada para apoiar a auditoria."""
     baixa = texto.lower()
     termos = (
         "chave",
@@ -816,7 +740,6 @@ def _extrair_sinais_operacionais(texto: str) -> str:
 
 
 async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[str, Any]:
-    """Abre a url_lote para extrair descrição, cidade/UF e valores reais quando disponível."""
     if item.get("_enriquecido"):
         return item
 
@@ -863,11 +786,15 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         item["cidade"] = cidade_real
         item["uf"] = uf_real
 
-        lance_real, avaliacao_real = _extrair_valores_com_rotulo(texto_pagina)
-        contexto = f"{item.get('titulo_lote', '')} {texto_pagina[:1200]}"
-        lance_ok, aval_ok = _garantir_valores_coerentes(lance_real, avaliacao_real, contexto)
-        item["lance_atual"] = lance_ok
-        item["valor_mercado_referencia"] = aval_ok
+        lance_real, avaliacao_real, tem_valor_real = _extrair_valores_com_rotulo(texto_pagina)
+        if tem_valor_real:
+            item["lance_atual"] = lance_real
+            item["valor_mercado_referencia"] = avaliacao_real
+            item["_valor_real"] = True
+        elif not item.get("_valor_real"):
+            item["lance_atual"] = lance_real
+            item["valor_mercado_referencia"] = avaliacao_real
+            item["_valor_real"] = False
 
         pdf_link = page.locator("a[href*='.pdf'], a[href*='edital']").first
         if await pdf_link.count():
@@ -879,8 +806,9 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         texto_limpo = " ".join(texto_pagina.split())
         sinais = _extrair_sinais_operacionais(texto_limpo)
         bloco_sinais = f"\n[SINAIS POSSE/EDITAL]: {sinais}" if sinais else ""
+        aviso_valor = "" if item.get("_valor_real") else "\n[AVISO_VALOR]: Valor não explícito na página; verificar edital/card."
         item["descricao_lote"] = (
-            f"{descricao_antiga}{bloco_sinais}\n\n[DETALHES DA PÁGINA DO LOTE]\n{texto_limpo[:2400]}".strip()[:3500]
+            f"{descricao_antiga}{bloco_sinais}{aviso_valor}\n\n[DETALHES DA PÁGINA DO LOTE]\n{texto_limpo[:2400]}".strip()[:3500]
         )
     except Exception as exc:
         logger.debug("Não foi possível enriquecer página do lote %s: %s", url_lote, exc)
@@ -889,7 +817,6 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
 
 
 def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
-    """Filtro rápido sem LLM para poupar cota diária de IA e evitar chamadas ao geocoder."""
     titulo = _normalizar_texto(bruto.get("titulo_lote"))
     descricao = _normalizar_texto(bruto.get("descricao_lote"))
     comitente = _normalizar_texto(bruto.get("comitente_credor"))
@@ -1001,10 +928,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                     urls_vistas.add(href_raw)
 
                     titulo = _escolher_titulo_card(linhas, href_raw)
-                    lance_est, mercado_est = _extrair_valores_com_rotulo(texto_card)
-                    lance_ok, aval_ok = _garantir_valores_coerentes(
-                        lance_est, mercado_est, f"{titulo} {texto_card}"
-                    )
+                    lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_card)
                     cidade_card, uf_card = _extrair_cidade_uf(texto_card)
 
                     coletados.append(
@@ -1018,8 +942,9 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                             "descricao_lote": texto_card[:1500],
                             "cidade": cidade_card,
                             "uf": uf_card,
-                            "lance_atual": lance_ok,
-                            "valor_mercado_referencia": aval_ok,
+                            "lance_atual": lance_est,
+                            "valor_mercado_referencia": mercado_est,
+                            "_valor_real": tem_val,
                         }
                     )
                     candidatos_extraidos += 1
@@ -1043,10 +968,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                             continue
 
                         urls_vistas.add(abs_href)
-                        lance_est, mercado_est = _extrair_valores_com_rotulo(texto_anc)
-                        lance_ok, aval_ok = _garantir_valores_coerentes(
-                            lance_est, mercado_est, texto_anc
-                        )
+                        lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_anc)
                         cidade_anc, uf_anc = _extrair_cidade_uf(texto_anc)
 
                         coletados.append(
@@ -1060,8 +982,9 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                                 "descricao_lote": texto_anc[:1500],
                                 "cidade": cidade_anc,
                                 "uf": uf_anc,
-                                "lance_atual": lance_ok,
-                                "valor_mercado_referencia": aval_ok,
+                                "lance_atual": lance_est,
+                                "valor_mercado_referencia": mercado_est,
+                                "_valor_real": tem_val,
                             }
                         )
                         candidatos_extraidos += 1
@@ -1084,7 +1007,6 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
 
 
 async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
-    """Coleta e enriquece até min(max_itens, 8) lotes nas páginas de detalhe."""
     coletados = await _coletar_brutos_sem_enriquecer(max_itens=max_itens)
     if not coletados:
         return []
@@ -1121,7 +1043,20 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         )
         return any(
             k in txt_b
-            for k in ("imovel", "imóvel", "apartamento", "apto", "casa", "terreno", "galpao", "galpão", "rural", "fazenda", "sítio", "sitio")
+            for k in (
+                "imovel",
+                "imóvel",
+                "apartamento",
+                "apto",
+                "casa",
+                "terreno",
+                "galpao",
+                "galpão",
+                "rural",
+                "fazenda",
+                "sítio",
+                "sitio",
+            )
         )
 
     candidatos_veiculos_maq: list[dict[str, Any]] = []
@@ -1141,7 +1076,6 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
             else:
                 candidatos_veiculos_maq.append(bruto)
 
-    # Intercala veículos/caminhões/máquinas com imóveis para garantir diversidade real na avaliação
     candidatos_enriquecer: list[dict[str, Any]] = []
     idx_v = 0
     idx_i = 0
@@ -1155,7 +1089,6 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
             candidatos_enriquecer.append(candidatos_imoveis[idx_i])
             idx_i += 1
 
-    # Reordena `brutos` colocando os candidatos enriquecidos intercalados no início da fila de avaliação
     ids_prioritarios = {id(x) for x in candidatos_enriquecer}
     brutos = candidatos_enriquecer + [b for b in brutos if id(b) not in ids_prioritarios]
 
