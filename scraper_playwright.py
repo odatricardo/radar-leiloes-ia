@@ -999,21 +999,20 @@ async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: floa
         logger.info("Pipeline encerrado sem novos lotes para avaliar.")
         return
 
-    candidatos_sem_loc: list[dict[str, Any]] = []
+    candidatos_enriquecer: list[dict[str, Any]] = []
+    limite_enriquecimento = max(max_lotes * 3, 6)
     for bruto in brutos:
         combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')}"
-        cidade_atual = (bruto.get("cidade") or "").strip().lower()
         bloqueado_direto = any(termo in _normalizar_texto(combinado) for termo in BLOQUEIO_DURO)
         if (
             not _titulo_parece_generico(bruto.get("titulo_lote", ""))
             and not bloqueado_direto
             and _tem_termo_escopo(combinado)
-            and (not cidade_atual or cidade_atual in {"não informada", "nao informada"})
-            and len(candidatos_sem_loc) < 6
+            and len(candidatos_enriquecer) < limite_enriquecimento
         ):
-            candidatos_sem_loc.append(bruto)
+            candidatos_enriquecer.append(bruto)
 
-    if candidatos_sem_loc:
+    if candidatos_enriquecer:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
@@ -1025,7 +1024,7 @@ async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: floa
             )
             page_loc = await context.new_page()
             page_loc.set_default_timeout(20000)
-            for item in candidatos_sem_loc:
+            for item in candidatos_enriquecer:
                 await _enriquecer_lote_na_pagina(page_loc, item)
             await browser.close()
 
