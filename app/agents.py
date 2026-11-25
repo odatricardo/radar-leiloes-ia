@@ -699,14 +699,15 @@ async def agente_4_e_5_curador(
         or viabilidade.margem_liquida_projetada_pct >= MARGEM_DIAMANTE_PCT
     )
 
-    # Só bloqueia em VERMELHO/DESCARTADO quando há bloqueio real ou margem abaixo do patamar mínimo
-    # sem atingir o patamar Diamante. Margens positivas relevantes (>= 15%) mantêm o lote visível.
-    margem_aceitavel_visivel = max(min(margem_meta, 15.0), 10.0)
+    # Só bloqueia em VERMELHO/DESCARTADO quando há bloqueio real (sinistro/restrição/dívida alta)
+    # ou margem negativa/praticamente nula (< 5%). Margens moderadas (>= 5% e < meta) ficam
+    # visíveis como ATENCAO/AMARELO ou PADRAO em vez de serem descartadas automaticamente.
+    margem_piso_descarte = 5.0
     bloqueio_grave = (
         auditoria.sinistro_ou_avaria_grave
         or auditoria.restricao_documental_ou_judicial
         or divida_pct_mercado > 8.0
-        or (not is_diamante and viabilidade.margem_liquida_projetada_pct < margem_aceitavel_visivel)
+        or (not is_diamante and viabilidade.margem_liquida_projetada_pct < margem_piso_descarte)
     )
 
     fiduciaria_ok = bool(auditoria.recuperado_financiamento_confirmado)
