@@ -583,7 +583,14 @@ def _auditoria_por_regras(lote: LoteEntrada, texto_edital: str) -> AuditoriaEdit
     )
     restricao = any(
         k in base_txt
-        for k in ("bloqueio judicial", "indisponibilidade", "ação judicial", "acao judicial")
+        for k in (
+            "bloqueio judicial",
+            "indisponibilidade",
+            "penhora",
+            "arresto",
+            "sequestro",
+            "liminar suspensiva",
+        )
     )
 
     posse = (
