@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import math
 import os
 import re
 from typing import Any
@@ -838,6 +839,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
         page = await context.new_page()
         page.set_default_timeout(25000)
 
+        cota_por_url = max(12, math.ceil(max_itens / max(len(urls_base), 1)))
         for url, origem_fallback in plano_urls:
             if len(coletados) >= max_itens:
                 break
@@ -859,8 +861,8 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                 total_cards = await cards.count()
 
                 candidatos_extraidos = 0
-                for idx in range(min(total_cards, max_itens * 3)):
-                    if len(coletados) >= max_itens:
+                for idx in range(min(total_cards, max(max_itens * 3, 90))):
+                    if len(coletados) >= max_itens or candidatos_extraidos >= cota_por_url:
                         break
                     card = cards.nth(idx)
                     texto_card = ((await card.inner_text()) or "").strip()
@@ -916,8 +918,8 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                 if candidatos_extraidos == 0:
                     anchors = page.locator("a[href]")
                     total_anchors = await anchors.count()
-                    for a_idx in range(min(total_anchors, 300)):
-                        if len(coletados) >= max_itens:
+                    for a_idx in range(min(total_anchors, 450)):
+                        if len(coletados) >= max_itens or candidatos_extraidos >= cota_por_url:
                             break
                         anc = anchors.nth(a_idx)
                         href_raw = await anc.get_attribute("href")
@@ -997,15 +999,15 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
     return coletados
 
 
-async def executar_pipeline_coleta(max_lotes: int = 3, delay_entre_lotes_s: float = 2.5) -> None:
+async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: float = 1.5) -> None:
     _sanitizar_variaveis_ambiente()
-    brutos = await _coletar_brutos_sem_enriquecer(max_itens=max_lotes * 5)
+    brutos = await _coletar_brutos_sem_enriquecer(max_itens=max(max_lotes * 8, 60))
     if not brutos:
         logger.info("Pipeline encerrado sem novos lotes para avaliar.")
         return
 
     candidatos_enriquecer: list[dict[str, Any]] = []
-    limite_enriquecimento = max(max_lotes * 3, 6)
+    limite_enriquecimento = max(max_lotes * 4, 24)
     for bruto in brutos:
         combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')}"
         bloqueado_direto = any(termo in _normalizar_texto(combinado) for termo in BLOQUEIO_DURO)
@@ -1105,13 +1107,13 @@ def main() -> None:
     parser.add_argument(
         "--max-lotes",
         type=int,
-        default=int(_limpar_env("MAX_LOTES_POR_EXECUCAO", "3") or "3"),
+        default=int(_limpar_env("MAX_LOTES_POR_EXECUCAO", "12") or "12"),
         help="Máximo de lotes enviados para a IA por execução",
     )
     parser.add_argument(
         "--delay",
         type=float,
-        default=2.5,
+        default=1.5,
         help="Pausa em segundos entre lotes para reduzir picos de API",
     )
     args = parser.parse_args()
