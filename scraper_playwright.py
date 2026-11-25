@@ -439,8 +439,11 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
 
 
 def _cidade_parece_ruido(cidade_bruta: str) -> bool:
-    baixa = cidade_bruta.lower().strip()
+    baixa = " ".join(cidade_bruta.lower().strip().split())
     if len(baixa) < 3:
+        return True
+    # Evita capturar áreas/metragens ou propriedades como nome de cidade (ex.: "72 ha - sítio...")
+    if re.search(r"\b\d+(?:[.,]\d+)?\s*(?:ha|hectares?|m2|m²|km2|km²|alqueires?)\b", baixa):
         return True
     if any(
         ruido in baixa
@@ -467,6 +470,14 @@ def _cidade_parece_ruido(cidade_bruta: str) -> bool:
             "patio",
             "comarca",
             "estado",
+            "sítio",
+            "sitio",
+            "fazenda",
+            "chácara",
+            "chacara",
+            "gleba",
+            "matrícula",
+            "matricula",
         )
     ):
         return True
@@ -477,8 +488,9 @@ def _extrair_cidade_uf(
     texto: str, padrao_cidade: str = "Não informada", padrao_uf: str = "XX"
 ) -> tuple[str, str]:
     """
-    Extrai (cidade, uf) de padrões como 'Barretos-SP', 'Campinas/SP', 'Campinas (SP)'
-    ou campos rotulados ('Local: Campinas', 'UF: SP').
+    Extrai (cidade, uf) priorizando o último segmento de 'Bairro/Local - Cidade - UF'
+    (ex.: 'Aparecidinha - Sorocaba - SP' -> 'Sorocaba', 'SP') e evitando capturar
+    metragens/propriedades como '72 ha - Sítio das Primaveras'.
     """
     janelas: list[str] = []
     for kw in (
@@ -501,18 +513,41 @@ def _extrair_cidade_uf(
     ):
         for match in re.finditer(r"\b" + re.escape(kw) + r"\b", texto, flags=re.IGNORECASE):
             inicio = max(0, match.start() - 60)
-            fim = min(len(texto), match.end() + 200)
+            fim = min(len(texto), match.end() + 220)
             janelas.append(texto[inicio:fim])
-    janelas.append(texto[:5500])
+    janelas.append(texto[:6000])
 
-    regex_loc = re.compile(
-        r"(?:^|[\s:;(\[])([A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*(?:/|-|–|\()\s*([A-Za-z]{2})(?=$|[\s.,;)\]])",
+    # Captura sequências como 'Aparecidinha - Sorocaba - SP' ou 'Brotas - SP'
+    regex_cadeia = re.compile(
+        r"(?:^|[\s:;(\[|])([A-Za-zÀ-ÿ0-9\s'\-\.]{2,90}?)\s*(?:/|-|–)\s*([A-Za-z]{2})(?=$|[\s.,;)\]|])",
         flags=re.MULTILINE,
     )
 
     for trecho in janelas:
-        for m in regex_loc.finditer(trecho):
-            cidade_bruta = m.group(1).strip(" ,;-–/([)")
+        for m in regex_cadeia.finditer(trecho):
+            cadeia_bruta = m.group(1).strip(" ,;-–/([|)")
+            uf_cand = m.group(2).strip().upper()
+            if uf_cand not in UFS_BRASIL:
+                continue
+
+            # Divide cadeias encadeadas (ex.: "Área Industrial - Aparecidinha - Sorocaba")
+            # e testa do segmento mais próximo da UF para trás.
+            partes_cadeia = [p.strip(" ,;-–/([|)") for p in re.split(r"\s*(?:/|-|–)\s*", cadeia_bruta) if p.strip()]
+            for parte in reversed(partes_cadeia):
+                if _cidade_parece_ruido(parte):
+                    continue
+                cidade_fmt = _formatar_nome_cidade(parte)
+                if len(cidade_fmt) >= 3:
+                    return cidade_fmt[:80], uf_cand
+
+    # Fallback para 'Cidade (SP)'
+    regex_paren = re.compile(
+        r"(?:^|[\s:;(\[|])([A-Za-zÀ-ÿ\s'\-\.]{2,45}?)\s*\(\s*([A-Za-z]{2})\s*\)",
+        flags=re.MULTILINE,
+    )
+    for trecho in janelas:
+        for m in regex_paren.finditer(trecho):
+            cidade_bruta = m.group(1).strip(" ,;-–/([|)")
             uf_cand = m.group(2).strip().upper()
             if uf_cand not in UFS_BRASIL or _cidade_parece_ruido(cidade_bruta):
                 continue
