@@ -377,21 +377,23 @@ def _garantir_valores_coerentes(
 def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
     """
     Retorna (lance_atual_ou_minimo, valor_avaliacao_ou_mercado) sempre com valores coerentes.
-    Suporta rótulos como 'Lance mínimo', 'Último lance', 'Avaliação' e 'Inicial: R$ ...' (1ª/2ª praça).
+    Suporta rótulos como 'Lance mínimo', 'Último lance', 'Avaliação' e 'Inicial: R$ ...' (1ª/2ª praça),
+    priorizando o menor valor de lance/praça quando múltiplos valores aparecem sem rótulo explícito.
     """
     lance: float | None = None
     avaliacao: float | None = None
 
+    # Se houver "Último lance" ou "Lance mínimo" explícito, usa o menor encontrado entre os rótulos
+    lances_explicitos: list[float] = []
     padroes_lance = (
-        r"(?:[uú]ltimo\s*lance|lance\s*(?:m[ií]nimo(?:\s*atual)?|inicial|atual))[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
-        r"(?:valor\s*(?:do\s*lance|inicial|m[ií]nimo))[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:[uú]ltimo\s*lance|lance\s*(?:m[ií]nimo(?:\s*atual)?|atual))[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:valor\s*(?:do\s*lance|m[ií]nimo))[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
     )
     for pat in padroes_lance:
-        m = re.search(pat, texto, flags=re.IGNORECASE)
-        if m:
-            lance = _parse_moeda_brl(m.group(1))
-            if lance is not None:
-                break
+        for m in re.finditer(pat, texto, flags=re.IGNORECASE):
+            v = _parse_moeda_brl(m.group(1))
+            if v is not None:
+                lances_explicitos.append(v)
 
     padroes_avaliacao = (
         r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
@@ -413,21 +415,24 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
         if v is not None:
             iniciais_vals.append(v)
 
-    if iniciais_vals:
-        menor_ini = min(iniciais_vals)
+    todos = _extrair_valores_brl(texto)
+
+    if lances_explicitos:
+        lance = min(lances_explicitos)
+    elif iniciais_vals:
+        lance = min(iniciais_vals)
         maior_ini = max(iniciais_vals)
-        if lance is None:
-            lance = menor_ini
         if avaliacao is None and maior_ini > lance:
             avaliacao = maior_ini
-
-    todos = _extrair_valores_brl(texto)
-    if lance is None and todos:
+    elif todos:
+        # Quando há múltiplos valores sem rótulo claro (ex.: 1ª e 2ª praça), prioriza o menor valor
+        # como lance atual para não confundir lance de 1ª praça com lance atual.
         lance = min(todos)
-    if avaliacao is None and todos:
-        maior = max(todos)
-        if lance is not None and maior > lance:
-            avaliacao = maior
+
+    if avaliacao is None:
+        candidatos_aval = [v for v in (iniciais_vals + todos) if lance is not None and v > lance]
+        if candidatos_aval:
+            avaliacao = max(candidatos_aval)
 
     return _garantir_valores_coerentes(lance, avaliacao, texto)
 
