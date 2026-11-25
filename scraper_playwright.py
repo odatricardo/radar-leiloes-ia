@@ -82,20 +82,50 @@ ESTADOS_POR_UF: dict[str, str] = {
 
 TERMOS_ESCOPO_ATIVOS = (
     "caminhonete",
+    "picape",
+    "pickup",
     "4x4",
     "hilux",
     "ranger",
     "amarok",
     "s10",
     "sw4",
+    "l200",
+    "triton",
+    "frontier",
+    "toro",
     "caminhao",
     "caminhão",
+    "cavalo mecanico",
+    "cavalo mecânico",
+    "carreta",
+    "semirreboque",
     "scania",
     "volvo",
     "mercedes",
     "iveco",
+    "daf",
+    "man ",
+    "vw ",
+    "ford cargo",
+    "atego",
+    "axor",
+    "actros",
+    "constellation",
     "trator",
     "colhedora",
+    "colheitadeira",
+    "pulverizador",
+    "plantadeira",
+    "retroescavadeira",
+    "escavadeira",
+    "pa carregadeira",
+    "pá carregadeira",
+    "john deere",
+    "massey ferguson",
+    "valtra",
+    "new holland",
+    "case ih",
     "maquina agricola",
     "máquina agrícola",
     "implemento",
@@ -672,17 +702,20 @@ def _url_parece_lote(url_candidata: str, url_base: str) -> bool:
 
 def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | None]]:
     """
-    Retorna pares (url_para_acessar, dominio_principal_se_fallback) preservando a ordem.
+    Retorna pares (url_para_acessar, categoria_hint) garantindo que todas as rotas
+    de categoria do portal (veículos, caminhões, imóveis) sejam percorridas, e não
+    puladas após a primeira página retornar candidatos.
     """
     plano: list[tuple[str, str | None]] = []
     vistas: set[str] = set()
 
     for url in urls_base:
         u_limpa = url.strip()
-        if not u_limpa or u_limpa in vistas:
+        if not u_limpa:
             continue
-        vistas.add(u_limpa)
-        plano.append((u_limpa, None))
+        if u_limpa not in vistas:
+            vistas.add(u_limpa)
+            plano.append((u_limpa, None))
 
         host = (urlparse(u_limpa).netloc or "").lower().removeprefix("www.")
         for dominio_chave, alternativas in URLS_ALTERNATIVAS_PORTAL.items():
@@ -690,7 +723,8 @@ def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | N
                 for alt in alternativas:
                     if alt not in vistas:
                         vistas.add(alt)
-                        plano.append((alt, dominio_chave))
+                        # Marca apenas como categoria complementar (nunca bloqueia outras categorias do mesmo domínio)
+                        plano.append((alt, None))
                 break
 
     return plano
@@ -874,7 +908,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
         page = await context.new_page()
         page.set_default_timeout(25000)
 
-        cota_por_url = max(12, math.ceil(max_itens / max(len(urls_base), 1)))
+        cota_por_url = max(8, math.ceil(max_itens / max(len(plano_urls), 1)))
         for url, origem_fallback in plano_urls:
             if len(coletados) >= max_itens:
                 break
@@ -1041,18 +1075,49 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         logger.info("Pipeline encerrado sem novos lotes para avaliar.")
         return
 
-    candidatos_enriquecer: list[dict[str, Any]] = []
-    limite_enriquecimento = max(max_lotes * 4, 24)
+    def _eh_imovel_bruto(item_b: dict[str, Any]) -> bool:
+        txt_b = _normalizar_texto(
+            f"{item_b.get('titulo_lote', '')} {item_b.get('descricao_lote', '')} {item_b.get('url_lote', '')}"
+        )
+        return any(
+            k in txt_b
+            for k in ("imovel", "imóvel", "apartamento", "apto", "casa", "terreno", "galpao", "galpão", "rural", "fazenda", "sítio", "sitio")
+        )
+
+    candidatos_veiculos_maq: list[dict[str, Any]] = []
+    candidatos_imoveis: list[dict[str, Any]] = []
+    limite_enriquecimento = max(max_lotes * 4, 28)
+
     for bruto in brutos:
-        combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')}"
+        combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')} {bruto.get('url_lote', '')}"
         bloqueado_direto = any(termo in _normalizar_texto(combinado) for termo in BLOQUEIO_DURO)
         if (
             not _titulo_parece_generico(bruto.get("titulo_lote", ""))
             and not bloqueado_direto
             and _tem_termo_escopo(combinado)
-            and len(candidatos_enriquecer) < limite_enriquecimento
         ):
-            candidatos_enriquecer.append(bruto)
+            if _eh_imovel_bruto(bruto):
+                candidatos_imoveis.append(bruto)
+            else:
+                candidatos_veiculos_maq.append(bruto)
+
+    # Intercala veículos/caminhões/máquinas com imóveis para garantir diversidade real na avaliação
+    candidatos_enriquecer: list[dict[str, Any]] = []
+    idx_v = 0
+    idx_i = 0
+    while len(candidatos_enriquecer) < limite_enriquecimento and (
+        idx_v < len(candidatos_veiculos_maq) or idx_i < len(candidatos_imoveis)
+    ):
+        if idx_v < len(candidatos_veiculos_maq):
+            candidatos_enriquecer.append(candidatos_veiculos_maq[idx_v])
+            idx_v += 1
+        if len(candidatos_enriquecer) < limite_enriquecimento and idx_i < len(candidatos_imoveis):
+            candidatos_enriquecer.append(candidatos_imoveis[idx_i])
+            idx_i += 1
+
+    # Reordena `brutos` colocando os candidatos enriquecidos intercalados no início da fila de avaliação
+    ids_prioritarios = {id(x) for x in candidatos_enriquecer}
+    brutos = candidatos_enriquecer + [b for b in brutos if id(b) not in ids_prioritarios]
 
     if candidatos_enriquecer:
         async with async_playwright() as p:
