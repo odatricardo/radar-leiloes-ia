@@ -161,6 +161,19 @@ BLOQUEIO_DURO = (
     "ver todos os eventos",
     "ver todos os lotes",
     "minha conta",
+    "habilite",
+    "cadastre",
+    "compartilhe",
+    "dúvidas e contato",
+    "duvidas e contato",
+    "termos e condições",
+    "termos e condicoes",
+    "consultar documentos",
+    "conheça nosso blog",
+    "conheca nosso blog",
+    "trabalhe conosco",
+    "sobre a empresa",
+    "newsletter",
 )
 
 RUIDO_SECUNDARIO = (
@@ -402,6 +415,10 @@ def _garantir_valores_coerentes(
     elif aval_ok is not None and lance_ok is None:
         lance_ok = round(aval_ok * 0.55, 2)
 
+    # Trava distorções extremas caso um valor de outra seção/praça fuja muito do lance
+    if lance_ok > 0 and aval_ok > lance_ok * 3.0:
+        aval_ok = round(lance_ok * mult, 2)
+
     return round(lance_ok, 2), round(aval_ok, 2)
 
 
@@ -470,7 +487,7 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
 
 def _cidade_parece_ruido(cidade_bruta: str) -> bool:
     baixa = " ".join(cidade_bruta.lower().strip().split())
-    if len(baixa) < 3:
+    if len(baixa) < 3 or len(baixa.split()) > 5:
         return True
     # Evita capturar áreas/metragens ou propriedades como nome de cidade (ex.: "72 ha - sítio...")
     if re.search(r"\b\d+(?:[.,]\d+)?\s*(?:ha|hectares?|m2|m²|km2|km²|alqueires?)\b", baixa):
@@ -508,6 +525,29 @@ def _cidade_parece_ruido(cidade_bruta: str) -> bool:
             "gleba",
             "matrícula",
             "matricula",
+            "habilite",
+            "cadastre",
+            "compartilhe",
+            "dúvidas",
+            "duvidas",
+            "contato",
+            "termos",
+            "condições",
+            "condicoes",
+            "documentos",
+            "newsletter",
+            "institucional",
+            "blog",
+            "sobre a empresa",
+            "trabalhe conosco",
+            "veículos",
+            "veiculos",
+            "caminhões",
+            "caminhoes",
+            "aeronaves",
+            "colhedoras",
+            "tratores",
+            "implementos",
         )
     ):
         return True
@@ -1086,7 +1126,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
 
     candidatos_veiculos_maq: list[dict[str, Any]] = []
     candidatos_imoveis: list[dict[str, Any]] = []
-    limite_enriquecimento = max(max_lotes * 4, 28)
+    limite_enriquecimento = min(max(max_lotes * 2, 16), 24)
 
     for bruto in brutos:
         combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')} {bruto.get('url_lote', '')}"
