@@ -36,6 +36,10 @@ def calcular_viabilidade(
     margem_diamante_frac = MARGEM_DIAMANTE_PCT / 100.0
     comissao_frac = auditoria.comissao_leiloeiro_pct / 100.0
 
+    # Aplica um desconto conservador sobre o valor de referência/1ª praça para estimar venda rápida
+    fator_liquidacao = 0.90 if categoria == "imovel" else 0.92
+    valor_venda_liquido_ref = lote.valor_mercado_referencia * fator_liquidacao
+
     frete = estimar_frete(categoria, distancia_km)
     taxa_patio = auditoria.taxa_administrativa_patio or lote.taxa_admin_padrao
 
@@ -45,29 +49,40 @@ def calcular_viabilidade(
         else 0.0
     )
 
+    custo_posse_extra = 0.0
     if categoria == "imovel":
-        impostos_e_cartorio = lote.valor_mercado_referencia * 0.045
+        impostos_e_cartorio = valor_venda_liquido_ref * 0.045
         reparos_e_condominio = 8000.0
-        corretagem_saida = lote.valor_mercado_referencia * 0.05 if lote.incluir_corretagem_imovel else 0.0
-        custos_operacionais_categoria = impostos_e_cartorio + reparos_e_condominio + corretagem_saida
+        if auditoria.posse_ou_chave == "ocupado":
+            custo_posse_extra = 12000.0
+        corretagem_saida = (
+            valor_venda_liquido_ref * 0.05 if lote.incluir_corretagem_imovel else 0.0
+        )
+        custos_operacionais_categoria = (
+            impostos_e_cartorio + reparos_e_condominio + custo_posse_extra + corretagem_saida
+        )
         contingencia_pct = 0.05
     elif categoria in ("caminhao", "maquina_agricola"):
-        custos_operacionais_categoria = 2800.0 + 8500.0
+        if auditoria.posse_ou_chave == "sem_chave":
+            custo_posse_extra = 2500.0
+        custos_operacionais_categoria = 2800.0 + 8500.0 + custo_posse_extra
         contingencia_pct = 0.03
     else:
-        custos_operacionais_categoria = 2800.0
+        if auditoria.posse_ou_chave == "sem_chave":
+            custo_posse_extra = 2000.0
+        custos_operacionais_categoria = 2800.0 + custo_posse_extra
         contingencia_pct = 0.03
 
     custos_nao_proporcionais = frete + taxa_patio + debitos_repassados + custos_operacionais_categoria
-    contingencia = lote.valor_mercado_referencia * contingencia_pct
+    contingencia = valor_venda_liquido_ref * contingencia_pct
 
-    alvo_custo_base = lote.valor_mercado_referencia / (1.0 + margem_min_frac)
+    alvo_custo_base = valor_venda_liquido_ref / (1.0 + margem_min_frac)
     lance_max_base = max(
         0.0,
         (alvo_custo_base - custos_nao_proporcionais - contingencia) / (1.0 + comissao_frac),
     )
 
-    alvo_custo_diamante = lote.valor_mercado_referencia / (1.0 + margem_diamante_frac)
+    alvo_custo_diamante = valor_venda_liquido_ref / (1.0 + margem_diamante_frac)
     lance_max_diamante = max(
         0.0,
         (alvo_custo_diamante - custos_nao_proporcionais - contingencia) / (1.0 + comissao_frac),
@@ -75,7 +90,7 @@ def calcular_viabilidade(
 
     comissao_atual = lote.lance_atual * comissao_frac
     custo_total_atual = lote.lance_atual + comissao_atual + custos_nao_proporcionais + contingencia
-    lucro_liquido = lote.valor_mercado_referencia - custo_total_atual
+    lucro_liquido = valor_venda_liquido_ref - custo_total_atual
     margem_pct = (lucro_liquido / custo_total_atual * 100.0) if custo_total_atual > 0 else 0.0
 
     eh_diamante = margem_pct >= MARGEM_DIAMANTE_PCT
