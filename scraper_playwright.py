@@ -377,13 +377,14 @@ def _garantir_valores_coerentes(
 def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
     """
     Retorna (lance_atual_ou_minimo, valor_avaliacao_ou_mercado) sempre com valores coerentes.
+    Suporta rótulos como 'Lance mínimo', 'Último lance', 'Avaliação' e 'Inicial: R$ ...' (1ª/2ª praça).
     """
     lance: float | None = None
     avaliacao: float | None = None
 
     padroes_lance = (
-        r"(?:lance\s*(?:m[ií]nimo(?:\s*atual)?|inicial|atual))[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
-        r"(?:valor\s*(?:do\s*lance|inicial|m[ií]nimo))[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:[uú]ltimo\s*lance|lance\s*(?:m[ií]nimo(?:\s*atual)?|inicial|atual))[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:valor\s*(?:do\s*lance|inicial|m[ií]nimo))[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
     )
     for pat in padroes_lance:
         m = re.search(pat, texto, flags=re.IGNORECASE)
@@ -393,7 +394,7 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
                 break
 
     padroes_avaliacao = (
-        r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)[^\dR$]{0,25}(R\$\s*[\d\.]+(?:,\d{2})?)",
+        r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)[^\dR$]{0,30}(R\$\s*[\d\.]+(?:,\d{2})?)",
     )
     for pat in padroes_avaliacao:
         m = re.search(pat, texto, flags=re.IGNORECASE)
@@ -401,6 +402,24 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float]:
             avaliacao = _parse_moeda_brl(m.group(1))
             if avaliacao is not None:
                 break
+
+    iniciais_vals: list[float] = []
+    for m_ini in re.finditer(
+        r"\binicial\s*[:\-–]?\s*(R\$\s*[\d\.]+(?:,\d{2})?)",
+        texto,
+        flags=re.IGNORECASE,
+    ):
+        v = _parse_moeda_brl(m_ini.group(1))
+        if v is not None:
+            iniciais_vals.append(v)
+
+    if iniciais_vals:
+        menor_ini = min(iniciais_vals)
+        maior_ini = max(iniciais_vals)
+        if lance is None:
+            lance = menor_ini
+        if avaliacao is None and maior_ini > lance:
+            avaliacao = maior_ini
 
     todos = _extrair_valores_brl(texto)
     if lance is None and todos:
