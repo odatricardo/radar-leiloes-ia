@@ -58,10 +58,10 @@ TERMOS_ESCOPO_ATIVOS = (
     "john deere", "massey ferguson", "valtra", "new holland",
     "case ih", "jacto", "stara", "yanmar", "agrale",
     "caterpillar", "komatsu", "hyundai", "jcb",
-    # Imóveis urbanos de liquidez
+    # Imóveis urbanos e comerciais
     "imovel", "imóvel", "apartamento", "apto", "casa", "sobrado",
     "galpao", "galpão", "barracão", "barracao",
-    "sala comercial", "predio comercial", "prédio comercial",
+    "sala comercial", "conjunto comercial", "predio comercial", "prédio comercial",
     "matricula", "matrícula",
 )
 
@@ -179,6 +179,26 @@ def _normalizar_texto(texto: str | None) -> str:
     return " ".join(texto.lower().split())
 
 
+def _parece_banner_ou_navegacao(texto: str) -> bool:
+    t = _normalizar_texto(texto)
+    if not t or len(t) < 4:
+        return True
+    if t.startswith(("ao vivo ", "hoje ", "lotes abertos", "lotes em breve", "ver todos")):
+        return True
+    if t in {
+        "aberto para lances", "cancelado", "quero vender",
+        "dê seu lance agora", "de seu lance agora",
+        "terrenos e lotes", "veículos", "veiculos", "aeronaves", "caminhoes", "caminhões",
+        "imóveis residenciais", "imoveis residenciais", "comerciais", "terrenos", "áreas rurais", "areas rurais",
+        "lotes abertos para lance", "lotes em breve", "são paulo - capital", "sao paulo - capital",
+        "zona norte", "zona sul", "zona leste", "zona oeste",
+    }:
+        return True
+    if len(t.split()) <= 3 and ("/" in t or t.startswith(("zona ", "judicial ", "tribunal ", "banco "))):
+        return True
+    return False
+
+
 def _classificar_categoria_bruta(texto: str) -> str | None:
     baixa = _normalizar_texto(texto)
     if any(
@@ -216,8 +236,9 @@ def _classificar_categoria_bruta(texto: str) -> str | None:
     if any(
         p in baixa
         for p in (
-            "imovel", "imóvel", "apartamento", "apto", "casa",
-            "galpao", "galpão", "matrícula", "matricula",
+            "imovel", "imóvel", "apartamento", "apto", "casa", "sobrado",
+            "galpao", "galpão", "sala comercial", "conjunto comercial",
+            "matrícula", "matricula",
         )
     ):
         return "imovel"
@@ -555,6 +576,7 @@ def _escolher_titulo_card(linhas: list[str], href: str) -> str:
         ln
         for ln in linhas
         if len(ln) >= 6
+        and not _parece_banner_ou_navegacao(ln)
         and not ln.lower().startswith(
             ("r$", "lance", "ver lote", "detalhes", "saiba mais", "entrar", "ver todos")
         )
@@ -643,13 +665,13 @@ def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | N
     return plano
 
 
-async def _rolar_pagina_lazy(page: Page, passos: int = 3, espera_s: float = 0.45) -> None:
+async def _rolar_pagina_lazy(page: Page, passos: int = 2, espera_s: float = 0.35) -> None:
     try:
         for _ in range(passos):
             await page.evaluate("window.scrollBy(0, Math.floor(window.innerHeight * 0.9))")
             await asyncio.sleep(espera_s)
         await page.evaluate("window.scrollTo(0, 0)")
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.15)
     except Exception:
         pass
 
@@ -677,13 +699,16 @@ def _extrair_sinais_operacionais(texto: str) -> str:
     return " | ".join(trechos)
 
 
-def _extrair_texto_edital_pdf_sync(url_pdf: str, max_paginas: int = 4) -> str:
+def _extrair_texto_edital_pdf_sync(url_pdf: str, max_paginas: int = 3) -> str:
     if not url_pdf or not url_pdf.lower().startswith(("http://", "https://")):
         return ""
     try:
-        import fitz  # PyMuPDF
+        import pymupdf as fitz
     except Exception:
-        return ""
+        try:
+            import fitz
+        except Exception:
+            return ""
 
     try:
         req = Request(
@@ -695,8 +720,8 @@ def _extrair_texto_edital_pdf_sync(url_pdf: str, max_paginas: int = 4) -> str:
                 )
             },
         )
-        with urlopen(req, timeout=8) as resp:
-            conteudo = resp.read(3_000_000)
+        with urlopen(req, timeout=6) as resp:
+            conteudo = resp.read(2_000_000)
         if not conteudo or not conteudo.startswith(b"%PDF"):
             return ""
         doc = fitz.open(stream=conteudo, filetype="pdf")
@@ -706,7 +731,7 @@ def _extrair_texto_edital_pdf_sync(url_pdf: str, max_paginas: int = 4) -> str:
             if txt:
                 partes.append(txt)
         doc.close()
-        return " ".join(" ".join(partes).split())[:4500]
+        return " ".join(" ".join(partes).split())[:4000]
     except Exception:
         return ""
 
@@ -725,8 +750,8 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
 
     item["_enriquecido"] = True
     try:
-        await page.goto(url_lote, wait_until="domcontentloaded", timeout=12000)
-        await page.wait_for_timeout(900)
+        await page.goto(url_lote, wait_until="domcontentloaded", timeout=10000)
+        await page.wait_for_timeout(550)
 
         html_pagina = ""
         try:
@@ -750,7 +775,10 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         pdf_link = page.locator("a[href*='.pdf'], a[href*='edital']").first
         if await pdf_link.count():
             href_pdf = await pdf_link.get_attribute("href")
-            if href_pdf:
+            if href_pdf and not any(
+                banido in href_pdf.lower()
+                for banido in ("privacidade", "regulamento", "termos", "lgpd", "politica")
+            ):
                 item["url_edital_pdf"] = urljoin(url_lote, href_pdf.strip())
 
         texto_pdf = ""
@@ -767,9 +795,9 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
             return item
 
         linhas_pag = [ln.strip() for ln in texto_pagina.splitlines() if len(ln.strip()) >= 4]
-        if _titulo_parece_generico(item.get("titulo_lote", "")) and linhas_pag:
+        if (_titulo_parece_generico(item.get("titulo_lote", "")) or _parece_banner_ou_navegacao(item.get("titulo_lote", ""))) and linhas_pag:
             for ln in linhas_pag:
-                if not _titulo_parece_generico(ln) and not ln.lower().startswith(
+                if not _titulo_parece_generico(ln) and not _parece_banner_ou_navegacao(ln) and not ln.lower().startswith(
                     ("home", "leilões", "leiloes", "entrar", "cadastrar", "r$")
                 ):
                     item["titulo_lote"] = ln[:180]
@@ -863,14 +891,15 @@ def _avaliar_qualidade_e_margem_bruta(bruto: dict[str, Any]) -> tuple[bool, str,
 
 
 def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
-    titulo = _normalizar_texto(bruto.get("titulo_lote"))
+    titulo_raw = bruto.get("titulo_lote", "")
+    if _titulo_parece_generico(titulo_raw) or _parece_banner_ou_navegacao(titulo_raw):
+        return False, "Título genérico, banner de evento ou navegação."
+
+    titulo = _normalizar_texto(titulo_raw)
     descricao = _normalizar_texto(bruto.get("descricao_lote"))
     comitente = _normalizar_texto(bruto.get("comitente_credor"))
     url_lote = _normalizar_texto(bruto.get("url_lote"))
     combinado = f"{titulo} {descricao} {comitente} {url_lote}"
-
-    if _titulo_parece_generico(bruto.get("titulo_lote", "")):
-        return False, "Título genérico ou de navegação/login/categoria."
 
     for termo in BLOQUEIO_DURO:
         if termo in combinado:
@@ -925,7 +954,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
             viewport={"width": 1366, "height": 768},
         )
         page = await context.new_page()
-        page.set_default_timeout(15000)
+        page.set_default_timeout(11000)
 
         cota_por_url = max(12, math.ceil(max_itens / max(len(plano_urls), 1)))
         for url, origem_fallback in plano_urls:
@@ -937,7 +966,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
             try:
                 logger.info("Acessando portal: %s", url)
                 await page.goto(url, wait_until="domcontentloaded")
-                await page.wait_for_timeout(1200)
+                await page.wait_for_timeout(700)
                 await _rolar_pagina_lazy(page)
 
                 seletor_cards = (
@@ -980,6 +1009,9 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                     urls_vistas.add(href_raw)
 
                     titulo = _escolher_titulo_card(linhas, href_raw)
+                    if _parece_banner_ou_navegacao(titulo):
+                        continue
+
                     lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_card)
                     if not tem_val:
                         lance_est, mercado_est = 1000.0, 1050.0
@@ -1020,7 +1052,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                             continue
 
                         texto_anc = " ".join(((await anc.inner_text()) or "").split()).strip()
-                        if len(texto_anc) < 8:
+                        if len(texto_anc) < 8 or _parece_banner_ou_navegacao(texto_anc):
                             continue
 
                         urls_vistas.add(abs_href)
@@ -1080,7 +1112,7 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
             viewport={"width": 1366, "height": 768},
         )
         page_detalhe = await context.new_page()
-        page_detalhe.set_default_timeout(12000)
+        page_detalhe.set_default_timeout(10000)
         for idx_item in range(max_paginas_detalhe):
             coletados[idx_item] = await _enriquecer_lote_na_pagina(page_detalhe, coletados[idx_item])
         await browser.close()
@@ -1103,10 +1135,11 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
     }
 
     for bruto in brutos:
-        combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')} {bruto.get('url_lote', '')}"
-        norm = _normalizar_texto(combinado)
-        if _titulo_parece_generico(bruto.get("titulo_lote", "")):
+        titulo_raw = bruto.get("titulo_lote", "")
+        if _titulo_parece_generico(titulo_raw) or _parece_banner_ou_navegacao(titulo_raw):
             continue
+        combinado = f"{titulo_raw} {bruto.get('descricao_lote', '')} {bruto.get('url_lote', '')}"
+        norm = _normalizar_texto(combinado)
         if any(termo in norm for termo in BLOQUEIO_DURO):
             continue
         if any(termo in norm for termo in BLOQUEIO_QUALIDADE_CRITICA):
@@ -1116,12 +1149,12 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         if cat in buckets:
             buckets[cat].append(bruto)
 
-    max_imoveis_enriquecer = max(2, math.ceil(max_lotes * 0.25))
+    max_imoveis_enriquecer = max(4, math.ceil(max_lotes * 0.4))
     candidatos_enriquecer: list[dict[str, Any]] = []
     for k in ("caminhao", "caminhonete_4x4", "maquina_agricola"):
         candidatos_enriquecer.extend(buckets[k][:8])
     candidatos_enriquecer.extend(buckets["imovel"][:max_imoveis_enriquecer])
-    limite_enriquecimento = min(max(max_lotes * 3, 20), 28)
+    limite_enriquecimento = min(max(max_lotes * 2, 16), 24)
     candidatos_enriquecer = candidatos_enriquecer[:limite_enriquecimento]
 
     if candidatos_enriquecer:
@@ -1136,7 +1169,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
                 viewport={"width": 1366, "height": 768},
             )
             page_loc = await context.new_page()
-            page_loc.set_default_timeout(12000)
+            page_loc.set_default_timeout(9500)
             for item in candidatos_enriquecer:
                 await _enriquecer_lote_na_pagina(page_loc, item)
             await browser.close()
@@ -1147,7 +1180,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
     def _chave_prioridade(item_ord: dict[str, Any]) -> tuple[int, int, float]:
         tem_val = 1 if item_ord.get("_valor_real") else 0
         cat_o = item_ord.get("_categoria_detectada") or ""
-        peso_cat = 2 if cat_o in ("caminhao", "caminhonete_4x4", "maquina_agricola") else (1 if cat_o == "imovel" else 0)
+        peso_cat = 2 if cat_o in ("caminhao", "caminhonete_4x4", "maquina_agricola", "imovel") else 0
         lance_o = float(item_ord.get("lance_atual") or 0.0)
         merc_o = float(item_ord.get("valor_mercado_referencia") or 0.0)
         desc_o = ((merc_o - lance_o) / merc_o) if (tem_val and merc_o > 0) else 0.0
@@ -1159,6 +1192,8 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
     aprovados = 0
     descartados_pre = 0
     fora_raio = 0
+    erros_429_consecutivos = 0
+    lista_candidatos_negocio: list[dict[str, Any]] = []
 
     for bruto in fila_completa:
         if avaliados >= max_lotes:
@@ -1205,8 +1240,19 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
 
         try:
             resultado = await avaliar_lote_detalhado(lote_obj)
-            if resultado and resultado.aprovado:
+            erros_429_consecutivos = 0
+            if resultado and getattr(resultado, "aprovado", False):
                 aprovados += 1
+                lista_candidatos_negocio.append(
+                    {
+                        "titulo": lote_obj.titulo_lote,
+                        "categoria": bruto.get("_categoria_detectada") or "indefinida",
+                        "cidade": lote_obj.cidade,
+                        "uf": lote_obj.uf,
+                        "distancia_km": round(dist_km, 1),
+                        "url_lote": lote_obj.url_lote,
+                    }
+                )
                 logger.info("APROVADO: %s", lote_obj.titulo_lote)
             else:
                 logger.info("Rejeitado: %s", getattr(resultado, "motivo_rejeicao", "sem motivo"))
@@ -1214,10 +1260,27 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
             logger.error("Erro ao avaliar '%s': %s", lote_obj.titulo_lote, exc)
             msg = str(exc)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg:
-                logger.warning("Cota ou instabilidade de API; encerrando rodada.")
-                break
+                erros_429_consecutivos += 1
+                if erros_429_consecutivos >= 2:
+                    logger.warning("Limite/instabilidade repetida de API (429/503); encerrando rodada com segurança.")
+                    break
+                await asyncio.sleep(2.0)
 
         await asyncio.sleep(delay_entre_lotes_s)
+
+    if lista_candidatos_negocio:
+        logger.info("Candidatos a negócio aprovados nesta rodada (%d):", len(lista_candidatos_negocio))
+        for idx_c, cand in enumerate(lista_candidatos_negocio, start=1):
+            logger.info(
+                "  #%d | [%s] %s — %s/%s (%.1f km) | %s",
+                idx_c,
+                cand["categoria"],
+                cand["titulo"],
+                cand["cidade"],
+                cand["uf"],
+                cand["distancia_km"],
+                cand["url_lote"],
+            )
 
     logger.info(
         "Funil: brutos=%d | enriquecidos=%d | descartados_pre=%d | fora_raio=%d | avaliados_ia=%d | aprovados=%d",
