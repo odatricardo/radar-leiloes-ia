@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
@@ -7,6 +9,7 @@ import os
 import re
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 from playwright.async_api import Page, async_playwright
 
@@ -15,102 +18,155 @@ from app.config import settings
 from app.main import avaliar_lote_detalhado
 from app.models import LoteEntrada
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-logger = logging.getLogger("radar_scraper")
+logger = logging.getLogger("radar_leiloes.scraper")
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
 
 UFS_BRASIL = {
-    "AC",
-    "AL",
-    "AP",
-    "AM",
-    "BA",
-    "CE",
-    "DF",
-    "ES",
-    "GO",
-    "MA",
-    "MT",
-    "MS",
-    "MG",
-    "PA",
-    "PB",
-    "PR",
-    "PE",
-    "PI",
-    "RJ",
-    "RN",
-    "RS",
-    "RO",
-    "RR",
-    "SC",
-    "SP",
-    "SE",
-    "TO",
+    "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA",
+    "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN",
+    "RS", "RO", "RR", "SC", "SP", "SE", "TO",
 }
 
 TERMOS_ESCOPO_ATIVOS = (
+    # Caminhonetes e picapes 4x4 / diesel
     "caminhonete",
+    "camionete",
     "picape",
     "pickup",
     "4x4",
     "hilux",
+    "sw4",
     "ranger",
     "amarok",
     "s10",
-    "sw4",
+    "trailblazer",
     "l200",
     "triton",
+    "pajero",
     "frontier",
     "toro",
+    "oroch",
+    "saveiro",
+    "strada",
+    "montana",
+    "ram 1500",
+    "ram 2500",
+    "ram 3500",
+    "f-250",
+    "f250",
+    "f-350",
+    "f350",
+    "d-20",
+    "d20",
+    # Caminhões e implementos rodoviários pesados
     "caminhao",
     "caminhão",
     "cavalo mecanico",
     "cavalo mecânico",
+    "trator rodoviario",
+    "trator rodoviário",
     "carreta",
     "semirreboque",
+    "semi-reboque",
+    "bitrem",
+    "rodotrem",
+    "cacamba",
+    "caçamba",
+    "bau",
+    "baú",
+    "sider",
+    "graneleiro",
+    "prancha",
+    "munck",
+    "guindaste",
     "scania",
-    "volvo",
-    "mercedes",
-    "iveco",
-    "daf",
-    "man ",
-    "vw ",
-    "ford cargo",
+    "volvo fh",
+    "volvo fm",
+    "volvo vm",
+    "mercedes-benz",
+    "mercedes benz",
+    "accelo",
     "atego",
     "axor",
     "actros",
     "constellation",
+    "delivery",
+    "worker",
+    "vw 24.",
+    "vw 17.",
+    "vw 13.",
+    "vw 9.",
+    "vw 8.",
+    "iveco",
+    "stralis",
+    "tector",
+    "daily",
+    "daf xf",
+    "daf cf",
+    "man tgx",
+    "ford cargo",
+    # Máquinas agrícolas e linha amarela
     "trator",
-    "colhedora",
     "colheitadeira",
+    "colhedora",
     "pulverizador",
     "plantadeira",
+    "semeadeira",
     "retroescavadeira",
     "escavadeira",
     "pa carregadeira",
     "pá carregadeira",
+    "motoniveladora",
+    "rolo compactador",
+    "minicarregadeira",
+    "bobcat",
+    "maquina agricola",
+    "máquina agrícola",
+    "implemento agricola",
+    "implemento agrícola",
     "john deere",
     "massey ferguson",
     "valtra",
     "new holland",
     "case ih",
-    "maquina agricola",
-    "máquina agrícola",
-    "implemento",
-    "reboque",
-    "veiculo",
-    "veículo",
+    "jacto",
+    "stara",
+    "yanmar",
+    "agrale",
+    "caterpillar",
+    "komatsu",
+    "hyundai",
+    "jcb",
+    # Imóveis urbanos e rurais
     "imovel",
     "imóvel",
     "apartamento",
     "apto",
     "casa",
+    "sobrado",
     "terreno",
+    "lote urbano",
+    "gleba",
+    "fazenda",
+    "sitio",
+    "sítio",
+    "chacara",
+    "chácara",
+    "area rural",
+    "área rural",
     "galpao",
     "galpão",
+    "barracão",
+    "barracao",
+    "sala comercial",
+    "predio comercial",
+    "prédio comercial",
+    "matricula",
+    "matrícula",
 )
 
 BLOQUEIO_DURO = (
@@ -127,6 +183,9 @@ BLOQUEIO_DURO = (
     "justica do trabalho",
     "justiça do trabalho",
     "judicial online",
+    "massa falida",
+    "falencia",
+    "falência",
     "entrar ou abrir conta",
     "abrir conta",
     "ver todos os eventos",
@@ -145,6 +204,43 @@ BLOQUEIO_DURO = (
     "trabalhe conosco",
     "sobre a empresa",
     "newsletter",
+)
+
+BLOQUEIO_QUALIDADE_CRITICA = (
+    "sinistrado",
+    "sinistro",
+    "media monta",
+    "média monta",
+    "grande monta",
+    "pequena monta",
+    "colisao",
+    "colisão",
+    "capotado",
+    "capotamento",
+    "incendiado",
+    "incendio",
+    "incêndio",
+    "alagamento",
+    "enchente",
+    "chassi recortado",
+    "chassi remarcado",
+    "sem motor",
+    "motor fundido",
+    "motor desmontado",
+    "sem cambio",
+    "sem câmbio",
+    "desmanche",
+    "somente pecas",
+    "somente peças",
+    "fracao ideal",
+    "fração ideal",
+    "parte ideal",
+    "direitos possessorios",
+    "direitos possessórios",
+    "leilao de direitos",
+    "leilão de direitos",
+    "ocupado por terceiros com acao",
+    "ocupado por terceiros com ação",
 )
 
 RUIDO_SECUNDARIO = (
@@ -197,6 +293,13 @@ INDICADORES_FIDUCIARIA = (
     "safra",
     "consórcio",
     "consorcio",
+    "consolidacao da propriedade",
+    "consolidação da propriedade",
+    "lei 9.514",
+    "9.514/97",
+    "devedor fiduciante",
+    "credor fiduciario",
+    "credor fiduciário",
 )
 
 PADROES_URL_IGNORADA = (
@@ -276,6 +379,7 @@ def _limpar_env(nome: str, padrao: str = "") -> str:
 
 
 def _sanitizar_variaveis_ambiente() -> None:
+    """Remove espaços ou quebras de linha acidentais em variáveis sensíveis."""
     chaves_env = (
         "GEMINI_API_KEY",
         "GEMINI_MODEL_FAST",
@@ -304,12 +408,118 @@ def _normalizar_texto(texto: str | None) -> str:
     return " ".join(texto.lower().split())
 
 
+def _classificar_categoria_bruta(texto: str) -> str | None:
+    """Identifica se o texto pertence a uma das 4 categorias-alvo do Radar."""
+    baixa = _normalizar_texto(texto)
+    if any(
+        p in baixa
+        for p in (
+            "caminhão",
+            "caminhao",
+            "cavalo mecânico",
+            "cavalo mecanico",
+            "carreta",
+            "semirreboque",
+            "scania",
+            "volvo",
+            "iveco",
+            "daf",
+            "atego",
+            "axor",
+            "actros",
+            "constellation",
+            "ford cargo",
+            "mercedes-benz 1",
+            "mercedes benz 1",
+            "mercedes-benz 2",
+            "mercedes benz 2",
+            "vw 24.",
+            "vw 17.",
+            "vw 13.",
+            "vw 8.",
+            "vw 9.",
+            "vw 11.",
+        )
+    ):
+        return "caminhao"
+
+    if any(
+        p in baixa
+        for p in (
+            "trator",
+            "colhedora",
+            "colheitadeira",
+            "pulverizador",
+            "plantadeira",
+            "retroescavadeira",
+            "escavadeira",
+            "pá carregadeira",
+            "pa carregadeira",
+            "máquina agrícola",
+            "maquina agricola",
+            "john deere",
+            "massey ferguson",
+            "valtra",
+            "new holland",
+            "case ih",
+        )
+    ):
+        return "maquina_agricola"
+
+    if any(
+        p in baixa
+        for p in (
+            "caminhonete",
+            "picape",
+            "pickup",
+            "4x4",
+            "hilux",
+            "ranger",
+            "amarok",
+            "s10",
+            "sw4",
+            "l200",
+            "triton",
+            "frontier",
+            "toro",
+        )
+    ):
+        return "caminhonete_4x4"
+
+    if any(
+        p in baixa
+        for p in (
+            "imovel",
+            "imóvel",
+            "apartamento",
+            "apto",
+            "casa",
+            "terreno",
+            "galpao",
+            "galpão",
+            "rural",
+            "fazenda",
+            "sítio",
+            "sitio",
+            "matrícula",
+            "matricula",
+            "lote urbano",
+        )
+    ):
+        return "imovel"
+
+    return None
+
+
 def _tem_termo_escopo(texto: str) -> bool:
+    if _classificar_categoria_bruta(texto) is not None:
+        return True
     baixa = _normalizar_texto(texto)
     return any(t in baixa for t in TERMOS_ESCOPO_ATIVOS)
 
 
 def _formatar_nome_cidade(bruto: str) -> str:
+    """Normaliza 'BARRETOS' ou 'são paulo' para 'Barretos' ou 'São Paulo'."""
     limpo = " ".join(bruto.strip(" ,;-–/([)").split())
     minusculas_conectivos = {"de", "da", "do", "das", "dos", "e"}
     partes = limpo.lower().split(" ")
@@ -420,7 +630,6 @@ def _extrair_dados_estruturados_html(html: str) -> dict[str, Any]:
             for elem in obj[:80]:
                 _varrer_obj(elem, chave_contexto)
 
-    # 1. JSON-LD
     for raw_ld in re.findall(
         r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
         html,
@@ -431,7 +640,6 @@ def _extrair_dados_estruturados_html(html: str) -> dict[str, Any]:
         except Exception:
             continue
 
-    # 2. __NEXT_DATA__
     m_next = re.search(
         r'<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
         html,
@@ -443,7 +651,6 @@ def _extrair_dados_estruturados_html(html: str) -> dict[str, Any]:
         except Exception:
             pass
 
-    # 3. Atributos data-* comuns
     for m_attr in re.finditer(
         r'\bdata-(price|lance|bid|avaliacao|avaliação|valor|city|cidade|uf|state)=["\']([^"\']{1,100})["\']',
         html,
@@ -854,6 +1061,10 @@ def _extrair_sinais_operacionais(texto: str) -> str:
         "ipva",
         "condomínio",
         "condominio",
+        "doc",
+        "ipva pago",
+        "sinistro",
+        "monta",
     )
     trechos: list[str] = []
     for termo in termos:
@@ -867,6 +1078,45 @@ def _extrair_sinais_operacionais(texto: str) -> str:
         if len(trechos) >= 6:
             break
     return " | ".join(trechos)
+
+
+def _extrair_texto_edital_pdf_sync(url_pdf: str, max_paginas: int = 6) -> str:
+    """Baixa e lê as primeiras páginas de um edital em PDF (quando PyMuPDF estiver instalado)."""
+    if not url_pdf or not url_pdf.lower().startswith(("http://", "https://")):
+        return ""
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return ""
+
+    try:
+        req = Request(
+            url_pdf,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
+            },
+        )
+        with urlopen(req, timeout=12) as resp:
+            conteudo = resp.read(4_500_000)
+        if not conteudo or not conteudo.startswith(b"%PDF"):
+            return ""
+        doc = fitz.open(stream=conteudo, filetype="pdf")
+        partes: list[str] = []
+        for idx in range(min(len(doc), max_paginas)):
+            txt = (doc[idx].get_text("text") or "").strip()
+            if txt:
+                partes.append(txt)
+        doc.close()
+        return " ".join(" ".join(partes).split())[:6000]
+    except Exception:
+        return ""
+
+
+async def _extrair_texto_edital_pdf(url_pdf: str) -> str:
+    return await asyncio.to_thread(_extrair_texto_edital_pdf_sync, url_pdf)
 
 
 async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[str, Any]:
@@ -901,7 +1151,23 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         if len(texto_pagina) < 40:
             texto_pagina = ((await page.locator("body").inner_text()) or "").strip()
 
-        if not texto_pagina and not dados_estruturados.get("lance") and not dados_estruturados.get("avaliacao"):
+        pdf_link = page.locator("a[href*='.pdf'], a[href*='edital']").first
+        if await pdf_link.count():
+            href_pdf = await pdf_link.get_attribute("href")
+            if href_pdf:
+                item["url_edital_pdf"] = urljoin(url_lote, href_pdf.strip())
+
+        texto_pdf = ""
+        if item.get("url_edital_pdf"):
+            texto_pdf = await _extrair_texto_edital_pdf(item["url_edital_pdf"])
+
+        texto_combinado_fonte = f"{texto_pagina}\n{texto_pdf}".strip()
+
+        if (
+            not texto_combinado_fonte
+            and not dados_estruturados.get("lance")
+            and not dados_estruturados.get("avaliacao")
+        ):
             return item
 
         linhas_pag = [ln.strip() for ln in texto_pagina.splitlines() if len(ln.strip()) >= 4]
@@ -916,7 +1182,7 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         cidade_atual = item.get("cidade")
         uf_atual = item.get("uf")
         cidade_real, uf_real = _extrair_cidade_uf(
-            texto_pagina,
+            texto_combinado_fonte,
             padrao_cidade=cidade_atual if cidade_atual and cidade_atual != "Não informada" else "Não informada",
             padrao_uf=uf_atual if uf_atual and uf_atual != "XX" else "XX",
         )
@@ -927,14 +1193,14 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         item["cidade"] = cidade_real
         item["uf"] = uf_real
 
-        lance_real, avaliacao_real, tem_valor_real = _extrair_valores_com_rotulo(texto_pagina)
+        lance_real, avaliacao_real, tem_valor_real = _extrair_valores_com_rotulo(texto_combinado_fonte)
         if not tem_valor_real and (
             dados_estruturados.get("lance") is not None or dados_estruturados.get("avaliacao") is not None
         ):
             lance_real, avaliacao_real, tem_valor_real = _garantir_valores_coerentes(
                 dados_estruturados.get("lance"),
                 dados_estruturados.get("avaliacao"),
-                f"{item.get('titulo_lote', '')} {texto_pagina[:1200]}",
+                f"{item.get('titulo_lote', '')} {texto_combinado_fonte[:1200]}",
             )
 
         if tem_valor_real:
@@ -946,17 +1212,21 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
             item["valor_mercado_referencia"] = avaliacao_real
             item["_valor_real"] = False
 
-        pdf_link = page.locator("a[href*='.pdf'], a[href*='edital']").first
-        if await pdf_link.count():
-            href_pdf = await pdf_link.get_attribute("href")
-            if href_pdf:
-                item["url_edital_pdf"] = urljoin(url_lote, href_pdf.strip())
+        cat_detectada = _classificar_categoria_bruta(
+            f"{item.get('titulo_lote', '')} {texto_combinado_fonte[:1500]}"
+        )
+        if cat_detectada:
+            item["_categoria_detectada"] = cat_detectada
 
         descricao_antiga = item.get("descricao_lote", "")
-        texto_limpo = " ".join(texto_pagina.split())
+        texto_limpo = " ".join(texto_combinado_fonte.split())
         sinais = _extrair_sinais_operacionais(texto_limpo)
         bloco_sinais = f"\n[SINAIS POSSE/EDITAL]: {sinais}" if sinais else ""
-        aviso_valor = "" if item.get("_valor_real") else "\n[AVISO_VALOR]: Valor não explícito na página; verificar edital/card."
+        aviso_valor = (
+            ""
+            if item.get("_valor_real")
+            else "\n[AVISO_VALOR]: Valor não explícito na página; verificar edital/card."
+        )
         item["descricao_lote"] = (
             f"{descricao_antiga}{bloco_sinais}{aviso_valor}\n\n[DETALHES DA PÁGINA DO LOTE]\n{texto_limpo[:2400]}".strip()[:3500]
         )
@@ -966,7 +1236,42 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
     return item
 
 
+def _avaliar_qualidade_e_margem_bruta(bruto: dict[str, Any]) -> tuple[bool, str, float]:
+    """
+    Filtro crítico de qualidade do bem e atratividade financeira antes da IA.
+    Retorna (aprovado_pre_qualidade, motivo, desconto_bruto_pct).
+    """
+    combinado = _normalizar_texto(
+        f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')} {bruto.get('url_lote', '')}"
+    )
+
+    for termo_critico in BLOQUEIO_QUALIDADE_CRITICA:
+        if termo_critico in combinado:
+            return False, f"Qualidade/risco reprovado no filtro crítico ('{termo_critico}').", 0.0
+
+    lance = float(bruto.get("lance_atual") or 0.0)
+    mercado = float(bruto.get("valor_mercado_referencia") or 0.0)
+    tem_valor_real = bool(bruto.get("_valor_real"))
+
+    if not tem_valor_real or lance <= 0 or mercado <= 0:
+        return True, "OK (aguardando confirmação de valor na auditoria)", 0.0
+
+    desconto_bruto_pct = ((mercado - lance) / mercado) * 100.0
+    categoria = bruto.get("_categoria_detectada") or _classificar_categoria_bruta(combinado)
+
+    desconto_minimo_exigido = 22.0 if categoria == "imovel" else 18.0
+    if desconto_bruto_pct < desconto_minimo_exigido:
+        return (
+            False,
+            f"Desconto bruto insuficiente ({desconto_bruto_pct:.1f}% < {desconto_minimo_exigido:.0f}% mínimo para margem líquida).",
+            round(desconto_bruto_pct, 2),
+        )
+
+    return True, "OK", round(desconto_bruto_pct, 2)
+
+
 def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
+    """Filtro rápido e crítico antes de gastar cota de geocoder/IA."""
     titulo = _normalizar_texto(bruto.get("titulo_lote"))
     descricao = _normalizar_texto(bruto.get("descricao_lote"))
     comitente = _normalizar_texto(bruto.get("comitente_credor"))
@@ -980,18 +1285,24 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
         if termo in combinado:
             return False, f"Bloqueado no pré-filtro por termo: '{termo}'."
 
-    tem_ativo_escopo = _tem_termo_escopo(f"{titulo} {combinado}")
+    categoria = bruto.get("_categoria_detectada") or _classificar_categoria_bruta(combinado)
+    tem_ativo_escopo = categoria is not None or _tem_termo_escopo(f"{titulo} {combinado}")
     if not tem_ativo_escopo:
         for termo in RUIDO_SECUNDARIO:
             if termo in combinado:
                 return False, f"Bloqueado no pré-filtro por termo: '{termo}'."
+        return False, "Fora das 4 categorias-alvo (caminhonete 4x4, caminhão, máquina agrícola, imóvel)."
 
     cidade = (bruto.get("cidade") or "").strip()
     if not titulo or not cidade or cidade.lower() in {"não informada", "nao informada"}:
         return False, "Dados mínimos ausentes (título ou localização)."
 
+    ok_qualidade, motivo_qualidade, _ = _avaliar_qualidade_e_margem_bruta(bruto)
+    if not ok_qualidade:
+        return False, motivo_qualidade
+
     tem_indicio_fiduciaria = any(ind in combinado for ind in INDICADORES_FIDUCIARIA)
-    if not tem_indicio_fiduciaria and not (bruto.get("_enriquecido") and tem_ativo_escopo):
+    if not tem_indicio_fiduciaria and not (bruto.get("_enriquecido") and categoria is not None):
         return False, "Sem indício claro de alienação fiduciária / retomada financeira."
 
     return True, "OK"
@@ -1025,7 +1336,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
         page = await context.new_page()
         page.set_default_timeout(25000)
 
-        cota_por_url = max(8, math.ceil(max_itens / max(len(plano_urls), 1)))
+        cota_por_url = max(10, math.ceil(max_itens / max(len(plano_urls), 1)))
         for url, origem_fallback in plano_urls:
             if len(coletados) >= max_itens:
                 break
@@ -1047,7 +1358,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                 total_cards = await cards.count()
 
                 candidatos_extraidos = 0
-                for idx in range(min(total_cards, max(max_itens * 3, 90))):
+                for idx in range(min(total_cards, max(max_itens * 3, 100))):
                     if len(coletados) >= max_itens or candidatos_extraidos >= cota_por_url:
                         break
                     card = cards.nth(idx)
@@ -1080,6 +1391,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                     titulo = _escolher_titulo_card(linhas, href_raw)
                     lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_card)
                     cidade_card, uf_card = _extrair_cidade_uf(texto_card)
+                    cat_card = _classificar_categoria_bruta(f"{titulo} {texto_card} {href_raw}")
 
                     coletados.append(
                         {
@@ -1095,6 +1407,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                             "lance_atual": lance_est,
                             "valor_mercado_referencia": mercado_est,
                             "_valor_real": tem_val,
+                            "_categoria_detectada": cat_card,
                         }
                     )
                     candidatos_extraidos += 1
@@ -1120,6 +1433,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                         urls_vistas.add(abs_href)
                         lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_anc)
                         cidade_anc, uf_anc = _extrair_cidade_uf(texto_anc)
+                        cat_anc = _classificar_categoria_bruta(f"{texto_anc} {abs_href}")
 
                         coletados.append(
                             {
@@ -1135,6 +1449,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                                 "lance_atual": lance_est,
                                 "valor_mercado_referencia": mercado_est,
                                 "_valor_real": tem_val,
+                                "_categoria_detectada": cat_anc,
                             }
                         )
                         candidatos_extraidos += 1
@@ -1157,6 +1472,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
 
 
 async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
+    """Coleta e enriquece até min(max_itens, 8) lotes nas páginas de detalhe."""
     coletados = await _coletar_brutos_sem_enriquecer(max_itens=max_itens)
     if not coletados:
         return []
@@ -1182,67 +1498,67 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
 
 async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: float = 1.5) -> None:
     _sanitizar_variaveis_ambiente()
-    brutos = await _coletar_brutos_sem_enriquecer(max_itens=max(max_lotes * 8, 60))
+    brutos = await _coletar_brutos_sem_enriquecer(max_itens=max(max_lotes * 10, 80))
     if not brutos:
         logger.info("Pipeline encerrado sem novos lotes para avaliar.")
         return
 
-    def _eh_imovel_bruto(item_b: dict[str, Any]) -> bool:
-        txt_b = _normalizar_texto(
-            f"{item_b.get('titulo_lote', '')} {item_b.get('descricao_lote', '')} {item_b.get('url_lote', '')}"
-        )
-        return any(
-            k in txt_b
-            for k in (
-                "imovel",
-                "imóvel",
-                "apartamento",
-                "apto",
-                "casa",
-                "terreno",
-                "galpao",
-                "galpão",
-                "rural",
-                "fazenda",
-                "sítio",
-                "sitio",
-            )
-        )
-
-    candidatos_veiculos_maq: list[dict[str, Any]] = []
-    candidatos_imoveis: list[dict[str, Any]] = []
-    limite_enriquecimento = min(max(max_lotes * 2, 16), 24)
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "caminhonete_4x4": [],
+        "caminhao": [],
+        "maquina_agricola": [],
+        "imovel": [],
+    }
 
     for bruto in brutos:
         combinado = f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')} {bruto.get('url_lote', '')}"
-        bloqueado_direto = any(termo in _normalizar_texto(combinado) for termo in BLOQUEIO_DURO)
-        if (
-            not _titulo_parece_generico(bruto.get("titulo_lote", ""))
-            and not bloqueado_direto
-            and _tem_termo_escopo(combinado)
-        ):
-            if _eh_imovel_bruto(bruto):
-                candidatos_imoveis.append(bruto)
-            else:
-                candidatos_veiculos_maq.append(bruto)
+        norm = _normalizar_texto(combinado)
+        if _titulo_parece_generico(bruto.get("titulo_lote", "")):
+            continue
+        if any(termo in norm for termo in BLOQUEIO_DURO):
+            continue
+        if any(termo in norm for termo in BLOQUEIO_QUALIDADE_CRITICA):
+            continue
 
+        cat = bruto.get("_categoria_detectada") or _classificar_categoria_bruta(combinado)
+        if cat in buckets:
+            buckets[cat].append(bruto)
+
+    ordem_rotacao = [
+        "caminhonete_4x4",
+        "caminhao",
+        "maquina_agricola",
+        "imovel",
+        "caminhonete_4x4",
+        "caminhao",
+        "maquina_agricola",
+    ]
+    limite_enriquecimento = min(max(max_lotes * 3, 24), 32)
     candidatos_enriquecer: list[dict[str, Any]] = []
-    idx_v = 0
-    idx_i = 0
-    while len(candidatos_enriquecer) < limite_enriquecimento and (
-        idx_v < len(candidatos_veiculos_maq) or idx_i < len(candidatos_imoveis)
-    ):
-        if idx_v < len(candidatos_veiculos_maq):
-            candidatos_enriquecer.append(candidatos_veiculos_maq[idx_v])
-            idx_v += 1
-        if len(candidatos_enriquecer) < limite_enriquecimento and idx_i < len(candidatos_imoveis):
-            candidatos_enriquecer.append(candidatos_imoveis[idx_i])
-            idx_i += 1
+    indices_bucket = {k: 0 for k in buckets}
 
-    ids_prioritarios = {id(x) for x in candidatos_enriquecer}
-    brutos = candidatos_enriquecer + [b for b in brutos if id(b) not in ids_prioritarios]
+    while len(candidatos_enriquecer) < limite_enriquecimento:
+        adicionou = False
+        for cat_key in ordem_rotacao:
+            if len(candidatos_enriquecer) >= limite_enriquecimento:
+                break
+            idx_b = indices_bucket[cat_key]
+            if idx_b < len(buckets[cat_key]):
+                candidatos_enriquecer.append(buckets[cat_key][idx_b])
+                indices_bucket[cat_key] = idx_b + 1
+                adicionou = True
+        if not adicionou:
+            break
 
     if candidatos_enriquecer:
+        logger.info(
+            "Enriquecendo %d candidatos prioritários (4x4=%d, caminhão=%d, agrícola=%d, imóvel=%d)...",
+            len(candidatos_enriquecer),
+            indices_bucket["caminhonete_4x4"],
+            indices_bucket["caminhao"],
+            indices_bucket["maquina_agricola"],
+            indices_bucket["imovel"],
+        )
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
@@ -1258,16 +1574,37 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
                 await _enriquecer_lote_na_pagina(page_loc, item)
             await browser.close()
 
+    ids_prioritarios = {id(x) for x in candidatos_enriquecer}
+    fila_completa = candidatos_enriquecer + [b for b in brutos if id(b) not in ids_prioritarios]
+
+    def _chave_prioridade(item_ord: dict[str, Any]) -> tuple[int, int, float]:
+        tem_val = 1 if item_ord.get("_valor_real") else 0
+        cat_o = item_ord.get("_categoria_detectada") or ""
+        peso_cat = (
+            2
+            if cat_o in ("caminhonete_4x4", "caminhao", "maquina_agricola")
+            else (1 if cat_o == "imovel" else 0)
+        )
+        lance_o = float(item_ord.get("lance_atual") or 0.0)
+        merc_o = float(item_ord.get("valor_mercado_referencia") or 0.0)
+        desc_o = ((merc_o - lance_o) / merc_o) if (tem_val and merc_o > 0) else 0.0
+        return (tem_val, peso_cat, desc_o)
+
+    fila_completa.sort(key=_chave_prioridade, reverse=True)
+
     avaliados = 0
     aprovados = 0
+    descartados_pre = 0
+    fora_raio = 0
 
-    for bruto in brutos:
+    for bruto in fila_completa:
         if avaliados >= max_lotes:
             logger.info("Limite de %d lotes avaliados por execução atingido.", max_lotes)
             break
 
         ok_filtro, motivo_filtro = pre_filtrar_lote_bruto(bruto)
         if not ok_filtro:
+            descartados_pre += 1
             logger.info("Descartado no pré-filtro (%s): %s", motivo_filtro, bruto.get("titulo_lote"))
             continue
 
@@ -1279,6 +1616,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
 
         dist_km = await resolver_distancia_km(lote_obj)
         if dist_km > settings.raio_maximo_km:
+            fora_raio += 1
             logger.info(
                 "Fora do raio de %.0f km (%.1f km em %s/%s): %s",
                 settings.raio_maximo_km,
@@ -1292,9 +1630,11 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         lote_obj.distancia_vinhedo_km = dist_km
         avaliados += 1
         logger.info(
-            "[%d/%d] Avaliando lote: %s (%s/%s - %.1f km) -> %s",
+            "[%d/%d] Avaliando lote [%s | valor_real=%s]: %s (%s/%s - %.1f km) -> %s",
             avaliados,
             max_lotes,
+            bruto.get("_categoria_detectada") or "indefinida",
+            bruto.get("_valor_real"),
             lote_obj.titulo_lote,
             lote_obj.cidade,
             lote_obj.uf,
@@ -1321,7 +1661,15 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
 
         await asyncio.sleep(delay_entre_lotes_s)
 
-    logger.info("Resumo da execução: %d avaliados via IA, %d aprovados/salvos.", avaliados, aprovados)
+    logger.info(
+        "Funil da execução: brutos=%d | enriquecidos=%d | descartados_pre=%d | fora_raio=%d | avaliados_ia=%d | aprovados=%d",
+        len(brutos),
+        len(candidatos_enriquecer),
+        descartados_pre,
+        fora_raio,
+        avaliados,
+        aprovados,
+    )
 
 
 def main() -> None:
