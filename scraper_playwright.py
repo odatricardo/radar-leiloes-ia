@@ -31,17 +31,20 @@ UFS_BRASIL = {
     "RS", "RO", "RR", "SC", "SP", "SE", "TO",
 }
 
+# Categorias de escopo amplo e bem definido: veículos, utilitários/4x4, pesados,
+# máquinas agrícolas/linha amarela e imóveis (urbanos, comerciais e terrenos).
 TERMOS_ESCOPO_ATIVOS = (
-    # Caminhonetes e picapes 4x4 / diesel
-    "caminhonete", "camionete", "picape", "pickup", "4x4",
+    # Caminhonetes, picapes, utilitários e veículos de interesse
+    "caminhonete", "camionete", "picape", "pickup", "4x4", "suv", "utilitario", "utilitário",
     "hilux", "sw4", "ranger", "amarok", "s10", "trailblazer",
     "l200", "triton", "pajero", "frontier", "toro", "oroch",
     "saveiro", "strada", "montana", "ram 1500", "ram 2500", "ram 3500",
     "f-250", "f250", "f-350", "f350", "d-20", "d20",
+    "cronos", "lancer", "cruze", "ka ", "civic", "corolla", "hb20", "onix", "compass", "renegade",
     # Caminhões e implementos rodoviários pesados
     "caminhao", "caminhão", "cavalo mecanico", "cavalo mecânico",
     "trator rodoviario", "trator rodoviário", "carreta", "semirreboque",
-    "semi-reboque", "bitrem", "rodotrem", "cacamba", "caçamba",
+    "semi-reboque", "reboque", "dolly", "bitrem", "rodotrem", "cacamba", "caçamba",
     "bau", "baú", "sider", "graneleiro", "prancha", "munck", "guindaste",
     "scania", "volvo fh", "volvo fm", "volvo vm",
     "mercedes-benz", "mercedes benz", "accelo", "atego", "axor", "actros",
@@ -58,20 +61,21 @@ TERMOS_ESCOPO_ATIVOS = (
     "john deere", "massey ferguson", "valtra", "new holland",
     "case ih", "jacto", "stara", "yanmar", "agrale",
     "caterpillar", "komatsu", "hyundai", "jcb",
-    # Imóveis urbanos e comerciais
+    # Imóveis urbanos, comerciais e terrenos
     "imovel", "imóvel", "apartamento", "apto", "casa", "sobrado",
-    "galpao", "galpão", "barracão", "barracao",
+    "galpao", "galpão", "barracão", "barracao", "terreno", "lote urbano",
     "sala comercial", "conjunto comercial", "predio comercial", "prédio comercial",
     "matricula", "matrícula",
 )
 
-BLOQUEIO_DURO = (
+# Termos de bloqueio duro usando casamento por palavra/expressão para evitar falsos positivos
+BLOQUEIO_DURO_PALAVRAS = (
     "sucata", "irrecuperavel", "irrecuperável",
-    "motocicleta", "moto ", "biz ",
+    "motocicleta", "moto", "biz",
     "execucao fiscal", "execução fiscal", "trabalhista", "penhora",
     "justica do trabalho", "justiça do trabalho", "judicial online",
     "massa falida", "falencia", "falência",
-    "imovel rural", "imóvel rural", "fazenda", "sitio ", "sítio ",
+    "imovel rural", "imóvel rural", "fazenda", "sítio", "sitio",
     "chacara", "chácara", "gleba", "alqueires", "alqueire",
     "entrar ou abrir conta", "abrir conta",
     "ver todos os eventos", "ver todos os lotes", "minha conta",
@@ -108,7 +112,7 @@ RUIDO_SECUNDARIO = (
 
 INDICADORES_FIDUCIARIA = (
     "alienacao fiduciaria", "alienação fiduciária",
-    "recuperado de financiamento", "retomada",
+    "recuperado de financiamento", "retomada", "extrajudicial",
     "banco ", "financeira", "bv ", "santander", "bradesco",
     "itau", "itaú", "john deere", "cnh ", "safra",
     "consórcio", "consorcio", "consolidacao da propriedade",
@@ -179,19 +183,36 @@ def _normalizar_texto(texto: str | None) -> str:
     return " ".join(texto.lower().split())
 
 
+def _contem_termo_bloqueio_duro(texto_normalizado: str) -> str | None:
+    for termo in BLOQUEIO_DURO_PALAVRAS:
+        if " " in termo:
+            if termo in texto_normalizado:
+                return termo
+        else:
+            if re.search(rf"\b{re.escape(termo)}\b", texto_normalizado):
+                return termo
+    return None
+
+
 def _parece_banner_ou_navegacao(texto: str) -> bool:
     t = _normalizar_texto(texto)
     if not t or len(t) < 4:
         return True
-    if t.startswith(("ao vivo ", "hoje ", "lotes abertos", "lotes em breve", "ver todos")):
+    if t.startswith(("ao vivo ", "hoje ", "lotes abertos", "lotes em breve", "ver todos", "inicia em ")):
+        return True
+    if re.search(r"\bin[ií]cio\s+\d{2}/\d{2}/\d{4}\b", t):
         return True
     if t in {
-        "aberto para lances", "cancelado", "quero vender",
-        "dê seu lance agora", "de seu lance agora",
+        "aberto para lances", "cancelado", "quero vender", "em loteamento",
+        "dê seu lance agora", "de seu lance agora", "como participar do",
         "terrenos e lotes", "veículos", "veiculos", "aeronaves", "caminhoes", "caminhões",
         "imóveis residenciais", "imoveis residenciais", "comerciais", "terrenos", "áreas rurais", "areas rurais",
         "lotes abertos para lance", "lotes em breve", "são paulo - capital", "sao paulo - capital",
+        "grande são paulo", "grande sao paulo", "interior", "destaques",
         "zona norte", "zona sul", "zona leste", "zona oeste",
+        "leilões judiciais", "leiloes judiciais", "leilões bradesco", "leiloes bradesco",
+        "leilões itaú", "leiloes itau", "leilões santander", "leiloes santander",
+        "whatsapp", "outros comitentes",
     }:
         return True
     if len(t.split()) <= 3 and ("/" in t or t.startswith(("zona ", "judicial ", "tribunal ", "banco "))):
@@ -205,7 +226,7 @@ def _classificar_categoria_bruta(texto: str) -> str | None:
         p in baixa
         for p in (
             "caminhão", "caminhao", "cavalo mecânico", "cavalo mecanico",
-            "carreta", "semirreboque", "scania", "volvo", "iveco", "daf",
+            "carreta", "semirreboque", "reboque", "dolly", "scania", "volvo", "iveco", "daf",
             "atego", "axor", "actros", "constellation", "ford cargo",
             "mercedes-benz 1", "mercedes benz 1", "mercedes-benz 2", "mercedes benz 2",
             "vw 24.", "vw 17.", "vw 13.", "vw 8.", "vw 9.", "vw 11.",
@@ -229,6 +250,7 @@ def _classificar_categoria_bruta(texto: str) -> str | None:
         for p in (
             "caminhonete", "picape", "pickup", "4x4", "hilux", "ranger",
             "amarok", "s10", "sw4", "l200", "triton", "frontier", "toro",
+            "cronos", "lancer", "cruze", "ka ", "civic", "corolla", "hb20", "onix",
         )
     ):
         return "caminhonete_4x4"
@@ -237,7 +259,7 @@ def _classificar_categoria_bruta(texto: str) -> str | None:
         p in baixa
         for p in (
             "imovel", "imóvel", "apartamento", "apto", "casa", "sobrado",
-            "galpao", "galpão", "sala comercial", "conjunto comercial",
+            "galpao", "galpão", "terreno", "sala comercial", "conjunto comercial",
             "matrícula", "matricula",
         )
     ):
@@ -587,10 +609,10 @@ def _escolher_titulo_card(linhas: list[str], href: str) -> str:
             if any(
                 k in ln.lower()
                 for k in (
-                    "hilux", "ranger", "amarok", "s10", "sw4",
+                    "hilux", "ranger", "amarok", "s10", "sw4", "frontier",
                     "caminhao", "caminhão", "scania", "volvo", "mercedes", "iveco",
                     "trator", "colhedora", "apartamento", "casa", "galpao", "galpão",
-                    "imovel", "imóvel", "veiculo", "veículo",
+                    "terreno", "imovel", "imóvel", "veiculo", "veículo",
                 )
             ):
                 return ln[:180]
@@ -659,7 +681,7 @@ def _expandir_urls_com_fallback(urls_base: list[str]) -> list[tuple[str, str | N
                 for alt in alternativas:
                     if alt not in vistas:
                         vistas.add(alt)
-                        plano.append((alt, None))
+                        plano.append((alt, dominio_chave))
                 break
 
     return plano
@@ -795,10 +817,17 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
             return item
 
         linhas_pag = [ln.strip() for ln in texto_pagina.splitlines() if len(ln.strip()) >= 4]
-        if (_titulo_parece_generico(item.get("titulo_lote", "")) or _parece_banner_ou_navegacao(item.get("titulo_lote", ""))) and linhas_pag:
+        if (
+            _titulo_parece_generico(item.get("titulo_lote", ""))
+            or _parece_banner_ou_navegacao(item.get("titulo_lote", ""))
+        ) and linhas_pag:
             for ln in linhas_pag:
-                if not _titulo_parece_generico(ln) and not _parece_banner_ou_navegacao(ln) and not ln.lower().startswith(
-                    ("home", "leilões", "leiloes", "entrar", "cadastrar", "r$")
+                if (
+                    not _titulo_parece_generico(ln)
+                    and not _parece_banner_ou_navegacao(ln)
+                    and not ln.lower().startswith(
+                        ("home", "leilões", "leiloes", "entrar", "cadastrar", "r$")
+                    )
                 ):
                     item["titulo_lote"] = ln[:180]
                     break
@@ -901,9 +930,9 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
     url_lote = _normalizar_texto(bruto.get("url_lote"))
     combinado = f"{titulo} {descricao} {comitente} {url_lote}"
 
-    for termo in BLOQUEIO_DURO:
-        if termo in combinado:
-            return False, f"Bloqueado por termo restrito: '{termo}'."
+    termo_bloqueio = _contem_termo_bloqueio_duro(combinado)
+    if termo_bloqueio:
+        return False, f"Bloqueado por termo restrito: '{termo_bloqueio}'."
 
     categoria = bruto.get("_categoria_detectada") or _classificar_categoria_bruta(combinado)
     tem_ativo_escopo = categoria is not None or _tem_termo_escopo(f"{titulo} {combinado}")
@@ -1122,7 +1151,7 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
 
 async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: float = 0.8) -> None:
     _sanitizar_variaveis_ambiente()
-    brutos = await _coletar_brutos_sem_enriquecer(max_itens=max(max_lotes * 10, 90))
+    brutos = await _coletar_brutos_sem_enriquecer(max_itens=max(max_lotes * 10, 100))
     if not brutos:
         logger.info("Pipeline encerrado sem novos lotes para avaliar.")
         return
@@ -1140,7 +1169,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
             continue
         combinado = f"{titulo_raw} {bruto.get('descricao_lote', '')} {bruto.get('url_lote', '')}"
         norm = _normalizar_texto(combinado)
-        if any(termo in norm for termo in BLOQUEIO_DURO):
+        if _contem_termo_bloqueio_duro(norm):
             continue
         if any(termo in norm for termo in BLOQUEIO_QUALIDADE_CRITICA):
             continue
@@ -1149,7 +1178,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         if cat in buckets:
             buckets[cat].append(bruto)
 
-    max_imoveis_enriquecer = max(4, math.ceil(max_lotes * 0.4))
+    max_imoveis_enriquecer = max(5, math.ceil(max_lotes * 0.45))
     candidatos_enriquecer: list[dict[str, Any]] = []
     for k in ("caminhao", "caminhonete_4x4", "maquina_agricola"):
         candidatos_enriquecer.extend(buckets[k][:8])
@@ -1241,7 +1270,10 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         try:
             resultado = await avaliar_lote_detalhado(lote_obj)
             erros_429_consecutivos = 0
-            if resultado and getattr(resultado, "aprovado", False):
+            margem_liq = float(getattr(resultado, "margem_liquida_projetada_pct", 0.0) or 0.0)
+            aprovado_ia = bool(resultado and getattr(resultado, "aprovado", False))
+            # Só considera candidato real a negócio se aprovado pela IA e sem margem negativa
+            if aprovado_ia and margem_liq >= 0.0:
                 aprovados += 1
                 lista_candidatos_negocio.append(
                     {
@@ -1250,12 +1282,18 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
                         "cidade": lote_obj.cidade,
                         "uf": lote_obj.uf,
                         "distancia_km": round(dist_km, 1),
+                        "margem_pct": round(margem_liq, 2),
                         "url_lote": lote_obj.url_lote,
                     }
                 )
-                logger.info("APROVADO: %s", lote_obj.titulo_lote)
+                logger.info("APROVADO (margem %.2f%%): %s", margem_liq, lote_obj.titulo_lote)
             else:
-                logger.info("Rejeitado: %s", getattr(resultado, "motivo_rejeicao", "sem motivo"))
+                motivo_rej = (
+                    f"Margem líquida negativa ({margem_liq:.2f}%)"
+                    if aprovado_ia and margem_liq < 0.0
+                    else getattr(resultado, "motivo_rejeicao", "sem motivo")
+                )
+                logger.info("Rejeitado: %s", motivo_rej)
         except Exception as exc:
             logger.error("Erro ao avaliar '%s': %s", lote_obj.titulo_lote, exc)
             msg = str(exc)
@@ -1272,15 +1310,18 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         logger.info("Candidatos a negócio aprovados nesta rodada (%d):", len(lista_candidatos_negocio))
         for idx_c, cand in enumerate(lista_candidatos_negocio, start=1):
             logger.info(
-                "  #%d | [%s] %s — %s/%s (%.1f km) | %s",
+                "  #%d | [%s] %s — %s/%s (%.1f km | margem %.2f%%) | %s",
                 idx_c,
                 cand["categoria"],
                 cand["titulo"],
                 cand["cidade"],
                 cand["uf"],
                 cand["distancia_km"],
+                cand["margem_pct"],
                 cand["url_lote"],
             )
+    else:
+        logger.info("Nenhum candidato com margem positiva aprovado nesta rodada.")
 
     logger.info(
         "Funil: brutos=%d | enriquecidos=%d | descartados_pre=%d | fora_raio=%d | avaliados_ia=%d | aprovados=%d",
