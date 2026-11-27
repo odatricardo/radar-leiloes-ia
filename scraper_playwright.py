@@ -31,7 +31,7 @@ UFS_BRASIL = {
     "RS", "RO", "RR", "SC", "SP", "SE", "TO",
 }
 
-# Categorias de escopo amplo e bem definido: veículos, utilitários/4x4, pesados,
+# Categorias de escopo: caminhonetes/utilitários/4x4, caminhões/implementos,
 # máquinas agrícolas/linha amarela e imóveis (urbanos, comerciais e terrenos).
 TERMOS_ESCOPO_ATIVOS = (
     # Caminhonetes, picapes, utilitários e veículos de interesse
@@ -222,44 +222,54 @@ def _parece_banner_ou_navegacao(texto: str) -> bool:
 
 def _classificar_categoria_bruta(texto: str) -> str | None:
     baixa = _normalizar_texto(texto)
+
+    # Prioridade 1: caminhonetes, picapes, utilitários e veículos de passeio/SUV
+    if any(
+        p in baixa
+        for p in (
+            "caminhonete", "camionete", "picape", "pickup", "4x4", "suv",
+            "hilux", "ranger", "amarok", "s10", "sw4", "trailblazer",
+            "l200", "triton", "pajero", "frontier", "toro", "oroch",
+            "saveiro", "strada", "montana", "ram 1500", "ram 2500", "ram 3500",
+            "cronos", "lancer", "cruze", "ka ", "civic", "corolla", "hb20", "onix", "compass", "renegade",
+        )
+    ):
+        return "caminhonete_4x4"
+
+    # Prioridade 2: caminhões e implementos rodoviários pesados (evita confundir com imóveis/terrenos)
     if any(
         p in baixa
         for p in (
             "caminhão", "caminhao", "cavalo mecânico", "cavalo mecanico",
-            "carreta", "semirreboque", "reboque", "dolly", "scania", "volvo", "iveco", "daf",
-            "atego", "axor", "actros", "constellation", "ford cargo",
+            "carreta", "semirreboque", "semi-reboque", "reboque", "dolly",
+            "bitrem", "rodotrem", "caçamba", "cacamba", "sider", "graneleiro",
+            "scania", "volvo fh", "volvo fm", "volvo vm", "iveco", "daf xf", "daf cf",
+            "atego", "axor", "actros", "accelo", "constellation", "ford cargo",
             "mercedes-benz 1", "mercedes benz 1", "mercedes-benz 2", "mercedes benz 2",
             "vw 24.", "vw 17.", "vw 13.", "vw 8.", "vw 9.", "vw 11.",
         )
     ):
         return "caminhao"
 
+    # Prioridade 3: máquinas agrícolas e linha amarela
     if any(
         p in baixa
         for p in (
             "trator", "colhedora", "colheitadeira", "pulverizador", "plantadeira",
             "retroescavadeira", "escavadeira", "pá carregadeira", "pa carregadeira",
-            "máquina agrícola", "maquina agricola", "john deere", "massey ferguson",
-            "valtra", "new holland", "case ih",
+            "motoniveladora", "máquina agrícola", "maquina agricola",
+            "john deere", "massey ferguson", "valtra", "new holland", "case ih",
         )
     ):
         return "maquina_agricola"
 
-    if any(
-        p in baixa
-        for p in (
-            "caminhonete", "picape", "pickup", "4x4", "hilux", "ranger",
-            "amarok", "s10", "sw4", "l200", "triton", "frontier", "toro",
-            "cronos", "lancer", "cruze", "ka ", "civic", "corolla", "hb20", "onix",
-        )
-    ):
-        return "caminhonete_4x4"
-
+    # Prioridade 4: imóveis urbanos, comerciais e terrenos
     if any(
         p in baixa
         for p in (
             "imovel", "imóvel", "apartamento", "apto", "casa", "sobrado",
-            "galpao", "galpão", "terreno", "sala comercial", "conjunto comercial",
+            "galpao", "galpão", "barracão", "barracao", "terreno", "lote urbano",
+            "sala comercial", "conjunto comercial", "predio comercial", "prédio comercial",
             "matrícula", "matricula",
         )
     ):
@@ -1272,8 +1282,8 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
             erros_429_consecutivos = 0
             margem_liq = float(getattr(resultado, "margem_liquida_projetada_pct", 0.0) or 0.0)
             aprovado_ia = bool(resultado and getattr(resultado, "aprovado", False))
-            # Só considera candidato real a negócio se aprovado pela IA e sem margem negativa
-            if aprovado_ia and margem_liq >= 0.0:
+            # Exige margem positiva real para evitar falsos aprovados com 0.00%
+            if aprovado_ia and margem_liq > 0.0:
                 aprovados += 1
                 lista_candidatos_negocio.append(
                     {
@@ -1289,8 +1299,8 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
                 logger.info("APROVADO (margem %.2f%%): %s", margem_liq, lote_obj.titulo_lote)
             else:
                 motivo_rej = (
-                    f"Margem líquida negativa ({margem_liq:.2f}%)"
-                    if aprovado_ia and margem_liq < 0.0
+                    f"Margem líquida insuficiente ({margem_liq:.2f}%)"
+                    if aprovado_ia and margem_liq <= 0.0
                     else getattr(resultado, "motivo_rejeicao", "sem motivo")
                 )
                 logger.info("Rejeitado: %s", motivo_rej)
