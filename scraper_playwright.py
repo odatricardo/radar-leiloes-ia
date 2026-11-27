@@ -31,106 +31,102 @@ UFS_BRASIL = {
     "RS", "RO", "RR", "SC", "SP", "SE", "TO",
 }
 
-# Categorias de escopo: caminhonetes/utilitários/4x4, caminhões/implementos,
-# máquinas agrícolas/linha amarela e imóveis (urbanos, comerciais e terrenos).
-TERMOS_ESCOPO_ATIVOS = (
-    # Caminhonetes, picapes, utilitários e veículos de interesse
-    "caminhonete", "camionete", "picape", "pickup", "4x4", "suv", "utilitario", "utilitário",
-    "hilux", "sw4", "ranger", "amarok", "s10", "trailblazer",
-    "l200", "triton", "pajero", "frontier", "toro", "oroch",
-    "saveiro", "strada", "montana", "ram 1500", "ram 2500", "ram 3500",
-    "f-250", "f250", "f-350", "f350", "d-20", "d20",
-    "cronos", "lancer", "cruze", "ka ", "civic", "corolla", "hb20", "onix", "compass", "renegade",
-    # Caminhões e implementos rodoviários pesados
-    "caminhao", "caminhão", "cavalo mecanico", "cavalo mecânico",
-    "trator rodoviario", "trator rodoviário", "carreta", "semirreboque",
-    "semi-reboque", "reboque", "dolly", "bitrem", "rodotrem", "cacamba", "caçamba",
-    "bau", "baú", "sider", "graneleiro", "prancha", "munck", "guindaste",
-    "scania", "volvo fh", "volvo fm", "volvo vm",
-    "mercedes-benz", "mercedes benz", "accelo", "atego", "axor", "actros",
-    "constellation", "delivery", "worker",
-    "vw 24.", "vw 17.", "vw 13.", "vw 9.", "vw 8.",
-    "iveco", "stralis", "tector", "daily", "daf xf", "daf cf",
-    "man tgx", "ford cargo",
-    # Máquinas agrícolas e linha amarela
-    "trator", "colheitadeira", "colhedora", "pulverizador",
-    "plantadeira", "semeadeira", "retroescavadeira", "escavadeira",
-    "pa carregadeira", "pá carregadeira", "motoniveladora",
-    "rolo compactador", "minicarregadeira", "bobcat",
-    "maquina agricola", "máquina agrícola", "implemento agricola", "implemento agrícola",
-    "john deere", "massey ferguson", "valtra", "new holland",
-    "case ih", "jacto", "stara", "yanmar", "agrale",
-    "caterpillar", "komatsu", "hyundai", "jcb",
-    # Imóveis urbanos, comerciais e terrenos
-    "imovel", "imóvel", "apartamento", "apto", "casa", "sobrado",
-    "galpao", "galpão", "barracão", "barracao", "terreno", "lote urbano",
-    "sala comercial", "conjunto comercial", "predio comercial", "prédio comercial",
-    "matricula", "matrícula",
+CATEGORIA_VEICULO_LEVE_UTIL = "caminhonete_4x4"
+CATEGORIA_PESADO = "caminhao"
+CATEGORIA_MAQUINA = "maquina_agricola"
+CATEGORIA_IMOVEL = "imovel"
+
+TERMOS_VEICULO_LEVE_UTIL = (
+    "caminhonete", "camionete", "picape", "pickup", "4x4", "suv",
+    "utilitario", "utilitário", "hilux", "sw4", "ranger", "amarok",
+    "s10", "trailblazer", "l200", "triton", "pajero", "frontier",
+    "toro", "oroch", "saveiro", "strada", "montana",
+    "ram 1500", "ram 2500", "ram 3500", "f-250", "f250", "f-350", "f350",
+    "cronos", "lancer", "cruze", "civic", "corolla", "hb20", "onix",
+    "compass", "renegade",
 )
 
-# Termos de bloqueio duro usando casamento por palavra/expressão para evitar falsos positivos
-BLOQUEIO_DURO_PALAVRAS = (
-    "sucata", "irrecuperavel", "irrecuperável",
-    "motocicleta", "moto", "biz",
-    "execucao fiscal", "execução fiscal", "trabalhista", "penhora",
-    "justica do trabalho", "justiça do trabalho", "judicial online",
-    "massa falida", "falencia", "falência",
-    "imovel rural", "imóvel rural", "fazenda", "sítio", "sitio",
-    "chacara", "chácara", "gleba", "alqueires", "alqueire",
-    "entrar ou abrir conta", "abrir conta",
-    "ver todos os eventos", "ver todos os lotes", "minha conta",
-    "habilite", "cadastre", "compartilhe",
-    "dúvidas e contato", "duvidas e contato",
-    "termos e condições", "termos e condicoes",
+TERMOS_PESADO = (
+    "caminhão", "caminhao", "cavalo mecânico", "cavalo mecanico",
+    "trator rodoviário", "trator rodoviario", "carreta", "semirreboque",
+    "semi-reboque", "reboque", "dolly", "bitrem", "rodotrem",
+    "caçamba", "cacamba", "sider", "graneleiro", "prancha",
+    "scania", "volvo fh", "volvo fm", "volvo vm", "iveco",
+    "daf xf", "daf cf", "man tgx", "atego", "axor", "actros",
+    "accelo", "constellation", "ford cargo",
+)
+
+TERMOS_MAQUINA = (
+    "trator", "colheitadeira", "colhedora", "pulverizador", "plantadeira",
+    "semeadeira", "retroescavadeira", "escavadeira", "pá carregadeira",
+    "pa carregadeira", "motoniveladora", "rolo compactador",
+    "minicarregadeira", "bobcat", "máquina agrícola", "maquina agricola",
+    "implemento agrícola", "implemento agricola", "john deere",
+    "massey ferguson", "valtra", "new holland", "case ih", "jacto",
+    "stara", "caterpillar", "komatsu", "jcb",
+)
+
+TERMOS_IMOVEL = (
+    "imóvel", "imovel", "apartamento", "apto", "casa", "sobrado",
+    "galpão", "galpao", "barracão", "barracao", "terreno",
+    "lote urbano", "sala comercial", "conjunto comercial",
+    "prédio comercial", "predio comercial", "matrícula", "matricula",
+)
+
+PALAVRAS_BLOQUEADAS_EXATAS = (
+    "sucata", "motocicleta", "moto", "biz", "penhora", "falência",
+    "falencia", "fazenda", "sítio", "sitio", "chácara", "chacara",
+    "gleba", "alqueire", "alqueires", "habilite", "cadastre",
+    "compartilhe", "newsletter",
+)
+
+EXPRESSOES_BLOQUEADAS = (
+    "irrecuperável", "irrecuperavel", "execução fiscal", "execucao fiscal",
+    "justiça do trabalho", "justica do trabalho", "judicial online",
+    "massa falida", "imóvel rural", "imovel rural",
+    "entrar ou abrir conta", "abrir conta", "ver todos os eventos",
+    "ver todos os lotes", "minha conta", "dúvidas e contato",
+    "duvidas e contato", "termos e condições", "termos e condicoes",
     "consultar documentos", "conheça nosso blog", "conheca nosso blog",
-    "trabalhe conosco", "sobre a empresa", "newsletter",
+    "trabalhe conosco", "sobre a empresa",
 )
 
-BLOQUEIO_QUALIDADE_CRITICA = (
-    "sinistrado", "sinistro", "media monta", "média monta",
-    "grande monta", "pequena monta", "colisao", "colisão",
-    "capotado", "capotamento", "incendiado", "incendio", "incêndio",
+QUALIDADE_BLOQUEADA = (
+    "sinistrado", "sinistro", "média monta", "media monta",
+    "grande monta", "pequena monta", "colisão", "colisao",
+    "capotado", "capotamento", "incendiado", "incêndio", "incendio",
     "alagamento", "enchente", "chassi recortado", "chassi remarcado",
-    "sem motor", "motor fundido", "motor desmontado",
-    "sem cambio", "sem câmbio", "desmanche",
-    "somente pecas", "somente peças",
-    "fracao ideal", "fração ideal", "parte ideal",
-    "direitos possessorios", "direitos possessórios",
-    "leilao de direitos", "leilão de direitos",
-    "ocupado por terceiros com acao", "ocupado por terceiros com ação",
+    "sem motor", "motor fundido", "motor desmontado", "sem câmbio",
+    "sem cambio", "desmanche", "somente peças", "somente pecas",
+    "fração ideal", "fracao ideal", "parte ideal",
+    "direitos possessórios", "direitos possessorios",
+    "leilão de direitos", "leilao de direitos",
 )
 
-RUIDO_SECUNDARIO = (
+RUIDO_NAO_ALVO = (
     "câmera", "camera", "alarme", "nvr", "gabinete", "mesa", "cadeira",
     "aspirador", "mixer", "frigobar", "freezer", "expositora",
     "ponte rolante", "empilhadeira", "torno", "solda", "gerador",
-    "motogerador", "plataforma tesoura", "plataforma elevatória", "plataforma elevatoria",
-    "porta pallets", "prateleiras", "túnel de encolhimento", "tunel de encolhimento",
-    "poliamida", "instrumentos de percussão", "instrumentos de percussao",
-    "cama elástica", "cama elastica",
-)
-
-INDICADORES_FIDUCIARIA = (
-    "alienacao fiduciaria", "alienação fiduciária",
-    "recuperado de financiamento", "retomada", "extrajudicial",
-    "banco ", "financeira", "bv ", "santander", "bradesco",
-    "itau", "itaú", "john deere", "cnh ", "safra",
-    "consórcio", "consorcio", "consolidacao da propriedade",
-    "consolidação da propriedade", "lei 9.514", "9.514/97",
-    "devedor fiduciante", "credor fiduciario", "credor fiduciário",
+    "motogerador", "plataforma tesoura", "plataforma elevatória",
+    "plataforma elevatoria", "porta pallets", "prateleiras",
+    "túnel de encolhimento", "tunel de encolhimento", "poliamida",
+    "instrumentos de percussão", "instrumentos de percussao",
+    "cama elástica", "cama elastica", "umbilical submarino",
+    "equipamentos de laboratório", "equipamentos de laboratorio",
+    "materiais elétricos", "materiais eletricos",
 )
 
 PADROES_URL_IGNORADA = (
     "/login", "/signin", "/authorization", "/cadastro", "/minha-conta",
     "/contato", "/fale-conosco", "/institucional", "/quem-somos",
     "/regulamento", "/termos", "/privacidade", "/ajuda", "/faq",
-    "/categorias", "/categoria", "/todos-eventos",
+    "/categorias", "/categoria", "/todos-eventos", "/evento/",
     "accounts.superbid.net", "javascript:", "mailto:", "tel:",
 )
 
 PADROES_URL_LOTE = (
-    "lote", "item", "bem", "veiculo", "imovel", "leilao",
-    "evento", "oferta", "detalhe", "asset", "lot", "pos-leilao",
+    "/lote", "/item", "/bem", "/veiculo", "/imovel", "/oferta",
+    "/detalhe", "/asset", "/lot", "/pos-leilao",
 )
 
 URLS_ALTERNATIVAS_PORTAL: dict[str, list[str]] = {
@@ -151,6 +147,11 @@ URLS_ALTERNATIVAS_PORTAL: dict[str, list[str]] = {
         "https://www.megaleiloes.com.br/imoveis",
     ],
 }
+
+BROWSER_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 def _limpar_env(nome: str, padrao: str = "") -> str:
@@ -184,19 +185,20 @@ def _normalizar_texto(texto: str | None) -> str:
 
 
 def _contem_termo_bloqueio_duro(texto_normalizado: str) -> str | None:
-    for termo in BLOQUEIO_DURO_PALAVRAS:
-        if " " in termo:
-            if termo in texto_normalizado:
-                return termo
-        else:
-            if re.search(rf"\b{re.escape(termo)}\b", texto_normalizado):
-                return termo
+    for expr in EXPRESSOES_BLOQUEADAS:
+        if expr in texto_normalizado:
+            return expr
+    for palavra in PALAVRAS_BLOQUEADAS_EXATAS:
+        if re.search(rf"\b{re.escape(palavra)}\b", texto_normalizado):
+            return palavra
     return None
 
 
 def _parece_banner_ou_navegacao(texto: str) -> bool:
     t = _normalizar_texto(texto)
     if not t or len(t) < 4:
+        return True
+    if re.match(r"^\d{1,2}/\d{1,2}(?:/\d{2,4})?\s*[-–]\s*\d{1,2}:\d{2}\b", t):
         return True
     if t.startswith(("ao vivo ", "hoje ", "lotes abertos", "lotes em breve", "ver todos", "inicia em ")):
         return True
@@ -205,14 +207,17 @@ def _parece_banner_ou_navegacao(texto: str) -> bool:
     if t in {
         "aberto para lances", "cancelado", "quero vender", "em loteamento",
         "dê seu lance agora", "de seu lance agora", "como participar do",
-        "terrenos e lotes", "veículos", "veiculos", "aeronaves", "caminhoes", "caminhões",
-        "imóveis residenciais", "imoveis residenciais", "comerciais", "terrenos", "áreas rurais", "areas rurais",
-        "lotes abertos para lance", "lotes em breve", "são paulo - capital", "sao paulo - capital",
+        "terrenos e lotes", "veículos", "veiculos", "aeronaves",
+        "caminhoes", "caminhões", "imóveis residenciais", "imoveis residenciais",
+        "comerciais", "terrenos", "áreas rurais", "areas rurais",
+        "lotes abertos para lance", "lotes em breve", "em breve",
+        "sexta-feira", "são paulo - capital", "sao paulo - capital",
         "grande são paulo", "grande sao paulo", "interior", "destaques",
         "zona norte", "zona sul", "zona leste", "zona oeste",
-        "leilões judiciais", "leiloes judiciais", "leilões bradesco", "leiloes bradesco",
-        "leilões itaú", "leiloes itau", "leilões santander", "leiloes santander",
-        "whatsapp", "outros comitentes",
+        "leilões judiciais", "leiloes judiciais", "leilões bradesco",
+        "leiloes bradesco", "leilões itaú", "leiloes itau",
+        "leilões santander", "leiloes santander", "whatsapp",
+        "outros comitentes",
     }:
         return True
     if len(t.split()) <= 3 and ("/" in t or t.startswith(("zona ", "judicial ", "tribunal ", "banco "))):
@@ -222,59 +227,14 @@ def _parece_banner_ou_navegacao(texto: str) -> bool:
 
 def _classificar_categoria_bruta(texto: str) -> str | None:
     baixa = _normalizar_texto(texto)
-
-    # Prioridade 1: caminhonetes, picapes, utilitários e veículos de passeio/SUV
-    if any(
-        p in baixa
-        for p in (
-            "caminhonete", "camionete", "picape", "pickup", "4x4", "suv",
-            "hilux", "ranger", "amarok", "s10", "sw4", "trailblazer",
-            "l200", "triton", "pajero", "frontier", "toro", "oroch",
-            "saveiro", "strada", "montana", "ram 1500", "ram 2500", "ram 3500",
-            "cronos", "lancer", "cruze", "ka ", "civic", "corolla", "hb20", "onix", "compass", "renegade",
-        )
-    ):
-        return "caminhonete_4x4"
-
-    # Prioridade 2: caminhões e implementos rodoviários pesados (evita confundir com imóveis/terrenos)
-    if any(
-        p in baixa
-        for p in (
-            "caminhão", "caminhao", "cavalo mecânico", "cavalo mecanico",
-            "carreta", "semirreboque", "semi-reboque", "reboque", "dolly",
-            "bitrem", "rodotrem", "caçamba", "cacamba", "sider", "graneleiro",
-            "scania", "volvo fh", "volvo fm", "volvo vm", "iveco", "daf xf", "daf cf",
-            "atego", "axor", "actros", "accelo", "constellation", "ford cargo",
-            "mercedes-benz 1", "mercedes benz 1", "mercedes-benz 2", "mercedes benz 2",
-            "vw 24.", "vw 17.", "vw 13.", "vw 8.", "vw 9.", "vw 11.",
-        )
-    ):
-        return "caminhao"
-
-    # Prioridade 3: máquinas agrícolas e linha amarela
-    if any(
-        p in baixa
-        for p in (
-            "trator", "colhedora", "colheitadeira", "pulverizador", "plantadeira",
-            "retroescavadeira", "escavadeira", "pá carregadeira", "pa carregadeira",
-            "motoniveladora", "máquina agrícola", "maquina agricola",
-            "john deere", "massey ferguson", "valtra", "new holland", "case ih",
-        )
-    ):
-        return "maquina_agricola"
-
-    # Prioridade 4: imóveis urbanos, comerciais e terrenos
-    if any(
-        p in baixa
-        for p in (
-            "imovel", "imóvel", "apartamento", "apto", "casa", "sobrado",
-            "galpao", "galpão", "barracão", "barracao", "terreno", "lote urbano",
-            "sala comercial", "conjunto comercial", "predio comercial", "prédio comercial",
-            "matrícula", "matricula",
-        )
-    ):
-        return "imovel"
-
+    if any(p in baixa for p in TERMOS_VEICULO_LEVE_UTIL):
+        return CATEGORIA_VEICULO_LEVE_UTIL
+    if any(p in baixa for p in TERMOS_PESADO):
+        return CATEGORIA_PESADO
+    if any(p in baixa for p in TERMOS_MAQUINA):
+        return CATEGORIA_MAQUINA
+    if any(p in baixa for p in TERMOS_IMOVEL):
+        return CATEGORIA_IMOVEL
     return None
 
 
@@ -282,7 +242,13 @@ def _tem_termo_escopo(texto: str) -> bool:
     if _classificar_categoria_bruta(texto) is not None:
         return True
     baixa = _normalizar_texto(texto)
-    return any(t in baixa for t in TERMOS_ESCOPO_ATIVOS)
+    todos = (
+        TERMOS_VEICULO_LEVE_UTIL
+        + TERMOS_PESADO
+        + TERMOS_MAQUINA
+        + TERMOS_IMOVEL
+    )
+    return any(t in baixa for t in todos)
 
 
 def _formatar_nome_cidade(bruto: str) -> str:
@@ -302,18 +268,20 @@ def _parse_moeda_brl(bruto: str) -> float | None:
     limpo = bruto.replace("R$", "").replace("\xa0", " ").strip()
     if "," in limpo:
         limpo = limpo.replace(".", "").replace(",", ".")
-    else:
-        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", limpo):
-            limpo = limpo.replace(".", "")
+    elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", limpo):
+        limpo = limpo.replace(".", "")
     try:
         val = float(limpo)
-        return val if val >= 500.0 else None
+        return round(val, 2) if val >= 500.0 else None
     except ValueError:
         return None
 
 
 def _extrair_valores_brl(texto: str) -> list[float]:
-    matches = re.findall(r"(?:R\$\s*)?(\d{1,3}(?:\.\d{3})+,\d{2}|R\$\s*\d{1,3}(?:\.\d{3})+)", texto)
+    matches = re.findall(
+        r"(?:R\$\s*)?(\d{1,3}(?:\.\d{3})+,\d{2}|R\$\s*\d{1,3}(?:\.\d{3})+)",
+        texto,
+    )
     valores: list[float] = []
     for bruto in matches:
         val = _parse_moeda_brl(bruto)
@@ -345,6 +313,32 @@ def _parse_numero_estruturado(valor: Any) -> float | None:
     return None
 
 
+def _cidade_parece_ruido(cidade_bruta: str) -> bool:
+    baixa = " ".join(cidade_bruta.lower().strip().split())
+    if len(baixa) < 3 or len(baixa.split()) > 5:
+        return True
+    if re.search(r"\b\d+(?:[.,]\d+)?\s*(?:ha|hectares?|m2|m²|km2|km²|alqueires?)\b", baixa):
+        return True
+    if any(
+        ruido in baixa
+        for ruido in (
+            "http", "www", "lote", "edital", "processo", "banco", "leilão",
+            "leilao", "lance", "avaliação", "industrial", "máquinas",
+            "maquinas", "equipamentos", "eventos", "localização",
+            "localizacao", "retirada", "pátio", "patio", "comarca",
+            "estado", "sítio", "sitio", "fazenda", "chácara", "chacara",
+            "gleba", "matrícula", "matricula", "habilite", "cadastre",
+            "compartilhe", "dúvidas", "duvidas", "contato", "termos",
+            "condições", "condicoes", "documentos", "newsletter",
+            "institucional", "blog", "sobre a empresa", "trabalhe conosco",
+            "veículos", "veiculos", "caminhões", "caminhoes", "aeronaves",
+            "colhedoras", "tratores", "implementos",
+        )
+    ):
+        return True
+    return False
+
+
 def _extrair_dados_estruturados_html(html: str) -> dict[str, Any]:
     resultado: dict[str, Any] = {"lance": None, "avaliacao": None, "cidade": None, "uf": None}
     if not html:
@@ -357,11 +351,17 @@ def _extrair_dados_estruturados_html(html: str) -> dict[str, Any]:
         if isinstance(obj, dict):
             for k, v in obj.items():
                 k_low = str(k).lower()
-                if any(t in k_low for t in ("lance", "bid", "minimumbid", "currentbid", "price", "valor_inicial", "inicial")):
+                if any(
+                    t in k_low
+                    for t in ("lance", "bid", "minimumbid", "currentbid", "price", "valor_inicial", "inicial")
+                ):
                     num = _parse_numero_estruturado(v)
                     if num is not None:
                         lances_cand.append(num)
-                if any(t in k_low for t in ("avaliacao", "avaliação", "appraisal", "marketvalue", "fipe", "mercado")):
+                if any(
+                    t in k_low
+                    for t in ("avaliacao", "avaliação", "appraisal", "marketvalue", "fipe", "mercado")
+                ):
                     num = _parse_numero_estruturado(v)
                     if num is not None:
                         aval_cand.append(num)
@@ -432,7 +432,7 @@ def _extrair_dados_estruturados_html(html: str) -> dict[str, Any]:
 
 
 def _garantir_valores_coerentes(
-    lance: float | None, avaliacao: float | None, contexto_texto: str = ""
+    lance: float | None, avaliacao: float | None
 ) -> tuple[float, float, bool]:
     lance_ok = float(lance) if (lance is not None and lance >= 500.0) else None
     aval_ok = float(avaliacao) if (avaliacao is not None and avaliacao >= 500.0) else None
@@ -456,24 +456,22 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float, bool]:
     avaliacao: float | None = None
 
     lances_explicitos: list[float] = []
-    padroes_lance = (
-        r"(?:[uú]ltimo\s*lance|lance\s*(?:m[ií]nimo(?:\s*atual)?|atual)|valor\s*(?:do\s*lance|m[ií]nimo))[^\dR$]{0,35}((?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{2})?)",
+    padrao_lance = (
+        r"(?:[uú]ltimo\s*lance|lance\s*(?:m[ií]nimo(?:\s*atual)?|atual)|valor\s*(?:do\s*lance|m[ií]nimo))"
+        r"[^\dR$]{0,35}((?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{2})?)"
     )
-    for pat in padroes_lance:
-        for m in re.finditer(pat, texto, flags=re.IGNORECASE):
-            v = _parse_moeda_brl(m.group(1))
-            if v is not None:
-                lances_explicitos.append(v)
+    for m in re.finditer(padrao_lance, texto, flags=re.IGNORECASE):
+        v = _parse_moeda_brl(m.group(1))
+        if v is not None:
+            lances_explicitos.append(v)
 
-    padroes_avaliacao = (
-        r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)[^\dR$]{0,35}((?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{2})?)",
+    padrao_avaliacao = (
+        r"(?:avalia[cç][aã]o|valor\s*de\s*mercado|mercado|fipe)"
+        r"[^\dR$]{0,35}((?:R\$\s*)?\d{1,3}(?:\.\d{3})+(?:,\d{2})?)"
     )
-    for pat in padroes_avaliacao:
-        m = re.search(pat, texto, flags=re.IGNORECASE)
-        if m:
-            avaliacao = _parse_moeda_brl(m.group(1))
-            if avaliacao is not None:
-                break
+    m_aval = re.search(padrao_avaliacao, texto, flags=re.IGNORECASE)
+    if m_aval:
+        avaliacao = _parse_moeda_brl(m_aval.group(1))
 
     iniciais_vals: list[float] = []
     for m_ini in re.finditer(
@@ -502,31 +500,7 @@ def _extrair_valores_com_rotulo(texto: str) -> tuple[float, float, bool]:
         if candidatos_aval:
             avaliacao = max(candidatos_aval)
 
-    return _garantir_valores_coerentes(lance, avaliacao, texto)
-
-
-def _cidade_parece_ruido(cidade_bruta: str) -> bool:
-    baixa = " ".join(cidade_bruta.lower().strip().split())
-    if len(baixa) < 3 or len(baixa.split()) > 5:
-        return True
-    if re.search(r"\b\d+(?:[.,]\d+)?\s*(?:ha|hectares?|m2|m²|km2|km²|alqueires?)\b", baixa):
-        return True
-    if any(
-        ruido in baixa
-        for ruido in (
-            "http", "www", "lote", "edital", "processo", "banco", "leilão", "leilao",
-            "lance", "avaliação", "industrial", "máquinas", "maquinas", "equipamentos",
-            "eventos", "localização", "localizacao", "retirada", "pátio", "patio",
-            "comarca", "estado", "sítio", "sitio", "fazenda", "chácara", "chacara",
-            "gleba", "matrícula", "matricula", "habilite", "cadastre", "compartilhe",
-            "dúvidas", "duvidas", "contato", "termos", "condições", "condicoes",
-            "documentos", "newsletter", "institucional", "blog", "sobre a empresa",
-            "trabalhe conosco", "veículos", "veiculos", "caminhões", "caminhoes",
-            "aeronaves", "colhedoras", "tratores", "implementos",
-        )
-    ):
-        return True
-    return False
+    return _garantir_valores_coerentes(lance, avaliacao)
 
 
 def _extrair_cidade_uf(
@@ -616,15 +590,7 @@ def _escolher_titulo_card(linhas: list[str], href: str) -> str:
     ]
     if candidatas:
         for ln in candidatas:
-            if any(
-                k in ln.lower()
-                for k in (
-                    "hilux", "ranger", "amarok", "s10", "sw4", "frontier",
-                    "caminhao", "caminhão", "scania", "volvo", "mercedes", "iveco",
-                    "trator", "colhedora", "apartamento", "casa", "galpao", "galpão",
-                    "terreno", "imovel", "imóvel", "veiculo", "veículo",
-                )
-            ):
+            if _tem_termo_escopo(ln):
                 return ln[:180]
         return candidatas[0][:180]
 
@@ -743,15 +709,7 @@ def _extrair_texto_edital_pdf_sync(url_pdf: str, max_paginas: int = 3) -> str:
             return ""
 
     try:
-        req = Request(
-            url_pdf,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                )
-            },
-        )
+        req = Request(url_pdf, headers={"User-Agent": BROWSER_UA})
         with urlopen(req, timeout=6) as resp:
             conteudo = resp.read(2_000_000)
         if not conteudo or not conteudo.startswith(b"%PDF"):
@@ -863,7 +821,6 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
             lance_real, avaliacao_real, tem_valor_real = _garantir_valores_coerentes(
                 dados_estruturados.get("lance"),
                 dados_estruturados.get("avaliacao"),
-                f"{item.get('titulo_lote', '')} {texto_combinado_fonte[:1000]}",
             )
 
         if tem_valor_real:
@@ -871,8 +828,8 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
             item["valor_mercado_referencia"] = avaliacao_real
             item["_valor_real"] = True
         elif not item.get("_valor_real"):
-            item["lance_atual"] = 1000.0
-            item["valor_mercado_referencia"] = 1050.0
+            item["lance_atual"] = 0.0
+            item["valor_mercado_referencia"] = 0.0
             item["_valor_real"] = False
 
         cat_detectada = _classificar_categoria_bruta(
@@ -899,36 +856,6 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
     return item
 
 
-def _avaliar_qualidade_e_margem_bruta(bruto: dict[str, Any]) -> tuple[bool, str, float]:
-    combinado = _normalizar_texto(
-        f"{bruto.get('titulo_lote', '')} {bruto.get('descricao_lote', '')} {bruto.get('url_lote', '')}"
-    )
-
-    for termo_critico in BLOQUEIO_QUALIDADE_CRITICA:
-        if termo_critico in combinado:
-            return False, f"Qualidade/risco reprovado ('{termo_critico}').", 0.0
-
-    lance = float(bruto.get("lance_atual") or 0.0)
-    mercado = float(bruto.get("valor_mercado_referencia") or 0.0)
-    tem_valor_real = bool(bruto.get("_valor_real"))
-
-    if not tem_valor_real or lance <= 1000.0 or mercado <= lance:
-        return True, "OK (sem valor explícito na fonte; encaminhar para auditoria)", 0.0
-
-    desconto_bruto_pct = ((mercado - lance) / mercado) * 100.0
-    categoria = bruto.get("_categoria_detectada") or _classificar_categoria_bruta(combinado)
-
-    desconto_minimo_exigido = 18.0 if categoria == "imovel" else 15.0
-    if desconto_bruto_pct < desconto_minimo_exigido:
-        return (
-            False,
-            f"Desconto bruto abaixo do piso ({desconto_bruto_pct:.1f}% < {desconto_minimo_exigido:.0f}%).",
-            round(desconto_bruto_pct, 2),
-        )
-
-    return True, "OK", round(desconto_bruto_pct, 2)
-
-
 def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
     titulo_raw = bruto.get("titulo_lote", "")
     if _titulo_parece_generico(titulo_raw) or _parece_banner_ou_navegacao(titulo_raw):
@@ -944,25 +871,36 @@ def pre_filtrar_lote_bruto(bruto: dict[str, Any]) -> tuple[bool, str]:
     if termo_bloqueio:
         return False, f"Bloqueado por termo restrito: '{termo_bloqueio}'."
 
+    for termo_critico in QUALIDADE_BLOQUEADA:
+        if termo_critico in combinado:
+            return False, f"Qualidade/risco reprovado ('{termo_critico}')."
+
     categoria = bruto.get("_categoria_detectada") or _classificar_categoria_bruta(combinado)
-    tem_ativo_escopo = categoria is not None or _tem_termo_escopo(f"{titulo} {combinado}")
-    if not tem_ativo_escopo:
-        for termo in RUIDO_SECUNDARIO:
-            if termo in combinado:
-                return False, f"Bloqueado por ruído: '{termo}'."
+    if categoria is None:
+        for ruido in RUIDO_NAO_ALVO:
+            if ruido in combinado:
+                return False, f"Bloqueado por ruído: '{ruido}'."
         return False, "Fora das categorias-alvo."
 
     cidade = (bruto.get("cidade") or "").strip()
-    if not titulo or not cidade or cidade.lower() in {"não informada", "nao informada"}:
+    if not cidade or cidade.lower() in {"não informada", "nao informada"}:
         return False, "Localização não informada."
 
-    ok_qualidade, motivo_qualidade, _ = _avaliar_qualidade_e_margem_bruta(bruto)
-    if not ok_qualidade:
-        return False, motivo_qualidade
+    if not bool(bruto.get("_valor_real")):
+        return False, "Valor monetário real não encontrado na fonte."
 
-    tem_indicio_fiduciaria = any(ind in combinado for ind in INDICADORES_FIDUCIARIA)
-    if not tem_indicio_fiduciaria and not (bruto.get("_enriquecido") and categoria is not None):
-        return False, "Sem indício de retomada financeira / alienação fiduciária."
+    lance = float(bruto.get("lance_atual") or 0.0)
+    mercado = float(bruto.get("valor_mercado_referencia") or 0.0)
+    if lance < 500.0 or mercado <= lance:
+        return False, "Valores de lance e mercado inconsistentes."
+
+    desconto_bruto_pct = ((mercado - lance) / mercado) * 100.0
+    piso_desconto = 18.0 if categoria == CATEGORIA_IMOVEL else 15.0
+    if desconto_bruto_pct < piso_desconto:
+        return (
+            False,
+            f"Desconto bruto abaixo do piso ({desconto_bruto_pct:.1f}% < {piso_desconto:.0f}%).",
+        )
 
     return True, "OK"
 
@@ -986,10 +924,7 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
+            user_agent=BROWSER_UA,
             viewport={"width": 1366, "height": 768},
         )
         page = await context.new_page()
@@ -1052,8 +987,6 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                         continue
 
                     lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_card)
-                    if not tem_val:
-                        lance_est, mercado_est = 1000.0, 1050.0
                     cidade_card, uf_card = _extrair_cidade_uf(texto_card)
                     cat_card = _classificar_categoria_bruta(f"{titulo} {texto_card} {href_raw}")
 
@@ -1068,8 +1001,8 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                             "descricao_lote": texto_card[:1500],
                             "cidade": cidade_card,
                             "uf": uf_card,
-                            "lance_atual": lance_est,
-                            "valor_mercado_referencia": mercado_est,
+                            "lance_atual": lance_est if tem_val else 0.0,
+                            "valor_mercado_referencia": mercado_est if tem_val else 0.0,
                             "_valor_real": tem_val,
                             "_categoria_detectada": cat_card,
                         }
@@ -1096,8 +1029,6 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
 
                         urls_vistas.add(abs_href)
                         lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_anc)
-                        if not tem_val:
-                            lance_est, mercado_est = 1000.0, 1050.0
                         cidade_anc, uf_anc = _extrair_cidade_uf(texto_anc)
                         cat_anc = _classificar_categoria_bruta(f"{texto_anc} {abs_href}")
 
@@ -1112,8 +1043,8 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
                                 "descricao_lote": texto_anc[:1500],
                                 "cidade": cidade_anc,
                                 "uf": uf_anc,
-                                "lance_atual": lance_est,
-                                "valor_mercado_referencia": mercado_est,
+                                "lance_atual": lance_est if tem_val else 0.0,
+                                "valor_mercado_referencia": mercado_est if tem_val else 0.0,
                                 "_valor_real": tem_val,
                                 "_categoria_detectada": cat_anc,
                             }
@@ -1144,10 +1075,7 @@ async def coletar_lotes_exemplo(max_itens: int = 10) -> list[dict[str, Any]]:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
+            user_agent=BROWSER_UA,
             viewport={"width": 1366, "height": 768},
         )
         page_detalhe = await context.new_page()
@@ -1167,10 +1095,10 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         return
 
     buckets: dict[str, list[dict[str, Any]]] = {
-        "caminhonete_4x4": [],
-        "caminhao": [],
-        "maquina_agricola": [],
-        "imovel": [],
+        CATEGORIA_VEICULO_LEVE_UTIL: [],
+        CATEGORIA_PESADO: [],
+        CATEGORIA_MAQUINA: [],
+        CATEGORIA_IMOVEL: [],
     }
 
     for bruto in brutos:
@@ -1181,7 +1109,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         norm = _normalizar_texto(combinado)
         if _contem_termo_bloqueio_duro(norm):
             continue
-        if any(termo in norm for termo in BLOQUEIO_QUALIDADE_CRITICA):
+        if any(termo in norm for termo in QUALIDADE_BLOQUEADA):
             continue
 
         cat = bruto.get("_categoria_detectada") or _classificar_categoria_bruta(combinado)
@@ -1190,9 +1118,9 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
 
     max_imoveis_enriquecer = max(5, math.ceil(max_lotes * 0.45))
     candidatos_enriquecer: list[dict[str, Any]] = []
-    for k in ("caminhao", "caminhonete_4x4", "maquina_agricola"):
+    for k in (CATEGORIA_PESADO, CATEGORIA_VEICULO_LEVE_UTIL, CATEGORIA_MAQUINA):
         candidatos_enriquecer.extend(buckets[k][:8])
-    candidatos_enriquecer.extend(buckets["imovel"][:max_imoveis_enriquecer])
+    candidatos_enriquecer.extend(buckets[CATEGORIA_IMOVEL][:max_imoveis_enriquecer])
     limite_enriquecimento = min(max(max_lotes * 2, 16), 24)
     candidatos_enriquecer = candidatos_enriquecer[:limite_enriquecimento]
 
@@ -1201,10 +1129,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                ),
+                user_agent=BROWSER_UA,
                 viewport={"width": 1366, "height": 768},
             )
             page_loc = await context.new_page()
@@ -1219,7 +1144,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
     def _chave_prioridade(item_ord: dict[str, Any]) -> tuple[int, int, float]:
         tem_val = 1 if item_ord.get("_valor_real") else 0
         cat_o = item_ord.get("_categoria_detectada") or ""
-        peso_cat = 2 if cat_o in ("caminhao", "caminhonete_4x4", "maquina_agricola", "imovel") else 0
+        peso_cat = 2 if cat_o in buckets else 0
         lance_o = float(item_ord.get("lance_atual") or 0.0)
         merc_o = float(item_ord.get("valor_mercado_referencia") or 0.0)
         desc_o = ((merc_o - lance_o) / merc_o) if (tem_val and merc_o > 0) else 0.0
@@ -1231,7 +1156,7 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
     aprovados = 0
     descartados_pre = 0
     fora_raio = 0
-    erros_429_consecutivos = 0
+    erros_api_consecutivos = 0
     lista_candidatos_negocio: list[dict[str, Any]] = []
 
     for bruto in fila_completa:
@@ -1279,10 +1204,9 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
 
         try:
             resultado = await avaliar_lote_detalhado(lote_obj)
-            erros_429_consecutivos = 0
+            erros_api_consecutivos = 0
             margem_liq = float(getattr(resultado, "margem_liquida_projetada_pct", 0.0) or 0.0)
             aprovado_ia = bool(resultado and getattr(resultado, "aprovado", False))
-            # Exige margem positiva real para evitar falsos aprovados com 0.00%
             if aprovado_ia and margem_liq > 0.0:
                 aprovados += 1
                 lista_candidatos_negocio.append(
@@ -1307,10 +1231,10 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         except Exception as exc:
             logger.error("Erro ao avaliar '%s': %s", lote_obj.titulo_lote, exc)
             msg = str(exc)
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg:
-                erros_429_consecutivos += 1
-                if erros_429_consecutivos >= 2:
-                    logger.warning("Limite/instabilidade repetida de API (429/503); encerrando rodada com segurança.")
+            if any(cod in msg for cod in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")):
+                erros_api_consecutivos += 1
+                if erros_api_consecutivos >= 2:
+                    logger.warning("Limite/instabilidade repetida de API; encerrando rodada com segurança.")
                     break
                 await asyncio.sleep(2.0)
 
