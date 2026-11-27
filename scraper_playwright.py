@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import logging
 import math
 import os
@@ -345,6 +346,136 @@ def _extrair_valores_brl(texto: str) -> list[float]:
     return valores
 
 
+def _parse_numero_estruturado(valor: Any) -> float | None:
+    if valor is None or isinstance(valor, bool):
+        return None
+    if isinstance(valor, (int, float)):
+        num = float(valor)
+        return round(num, 2) if num >= 500.0 else None
+    if isinstance(valor, str):
+        limpo = valor.strip()
+        if not limpo:
+            return None
+        if "," in limpo:
+            return _parse_moeda_brl(limpo)
+        limpo_num = re.sub(r"[^\d.]", "", limpo)
+        if limpo_num.count(".") > 1:
+            limpo_num = limpo_num.replace(".", "")
+        try:
+            num = float(limpo_num)
+            return round(num, 2) if num >= 500.0 else None
+        except ValueError:
+            return None
+    return None
+
+
+def _extrair_dados_estruturados_html(html: str) -> dict[str, Any]:
+    """Extrai lance, avaliação, cidade e UF de JSON-LD, __NEXT_DATA__ e atributos data-*."""
+    resultado: dict[str, Any] = {
+        "lance": None,
+        "avaliacao": None,
+        "cidade": None,
+        "uf": None,
+    }
+    if not html:
+        return resultado
+
+    lances_cand: list[float] = []
+    aval_cand: list[float] = []
+
+    def _varrer_obj(obj: Any, chave_contexto: str = "") -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                k_low = str(k).lower()
+                ctx = f"{chave_contexto}.{k_low}" if chave_contexto else k_low
+
+                if any(
+                    t in k_low
+                    for t in ("lance", "bid", "minimumbid", "currentbid", "price", "valor_inicial", "inicial")
+                ):
+                    num = _parse_numero_estruturado(v)
+                    if num is not None:
+                        lances_cand.append(num)
+
+                if any(
+                    t in k_low
+                    for t in ("avaliacao", "avaliação", "appraisal", "marketvalue", "fipe", "mercado")
+                ):
+                    num = _parse_numero_estruturado(v)
+                    if num is not None:
+                        aval_cand.append(num)
+
+                if any(t in k_low for t in ("city", "cidade", "municipio", "município", "addresslocality")):
+                    if isinstance(v, str) and not _cidade_parece_ruido(v) and not resultado["cidade"]:
+                        resultado["cidade"] = _formatar_nome_cidade(v)[:80]
+
+                if any(t in k_low for t in ("uf", "state", "estado", "addressregion")):
+                    if isinstance(v, str):
+                        uf_up = v.strip().upper()
+                        if len(uf_up) == 2 and uf_up in UFS_BRASIL and not resultado["uf"]:
+                            resultado["uf"] = uf_up
+
+                _varrer_obj(v, ctx)
+        elif isinstance(obj, list):
+            for elem in obj[:80]:
+                _varrer_obj(elem, chave_contexto)
+
+    # 1. JSON-LD
+    for raw_ld in re.findall(
+        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        try:
+            _varrer_obj(json.loads(raw_ld.strip()), "json_ld")
+        except Exception:
+            continue
+
+    # 2. __NEXT_DATA__
+    m_next = re.search(
+        r'<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m_next:
+        try:
+            _varrer_obj(json.loads(m_next.group(1).strip()), "next_data")
+        except Exception:
+            pass
+
+    # 3. Atributos data-* comuns
+    for m_attr in re.finditer(
+        r'\bdata-(price|lance|bid|avaliacao|avaliação|valor|city|cidade|uf|state)=["\']([^"\']{1,100})["\']',
+        html,
+        flags=re.IGNORECASE,
+    ):
+        attr_nome = m_attr.group(1).lower()
+        attr_val = m_attr.group(2).strip()
+        if attr_nome in ("price", "lance", "bid", "valor"):
+            num = _parse_numero_estruturado(attr_val)
+            if num is not None:
+                lances_cand.append(num)
+        elif attr_nome in ("avaliacao", "avaliação"):
+            num = _parse_numero_estruturado(attr_val)
+            if num is not None:
+                aval_cand.append(num)
+        elif attr_nome in ("city", "cidade") and not resultado["cidade"] and not _cidade_parece_ruido(attr_val):
+            resultado["cidade"] = _formatar_nome_cidade(attr_val)[:80]
+        elif attr_nome in ("uf", "state") and not resultado["uf"]:
+            uf_up = attr_val.upper()
+            if uf_up in UFS_BRASIL:
+                resultado["uf"] = uf_up
+
+    if lances_cand:
+        resultado["lance"] = min(lances_cand)
+    if aval_cand:
+        lance_ref = resultado["lance"] or 0.0
+        maiores = [v for v in aval_cand if v > lance_ref]
+        resultado["avaliacao"] = max(maiores) if maiores else max(aval_cand)
+
+    return resultado
+
+
 def _garantir_valores_coerentes(
     lance: float | None, avaliacao: float | None, contexto_texto: str = ""
 ) -> tuple[float, float, bool]:
@@ -356,7 +487,6 @@ def _garantir_valores_coerentes(
     aval_ok = float(avaliacao) if (avaliacao is not None and avaliacao >= 500.0) else None
 
     if lance_ok is None and aval_ok is None:
-        # Sentinela conservador não-inflado quando o portal não expõe valores numéricos legíveis
         return 1000.0, 1050.0, False
 
     if lance_ok is not None and (aval_ok is None or aval_ok <= lance_ok):
@@ -752,6 +882,13 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         await page.goto(url_lote, wait_until="domcontentloaded", timeout=20000)
         await page.wait_for_timeout(1800)
 
+        html_pagina = ""
+        try:
+            html_pagina = await page.content()
+        except Exception:
+            html_pagina = ""
+        dados_estruturados = _extrair_dados_estruturados_html(html_pagina)
+
         texto_pagina = ""
         seletores_desc = (
             "[class*='descricao'], [class*='description'], [id*='descricao'], "
@@ -764,7 +901,7 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         if len(texto_pagina) < 40:
             texto_pagina = ((await page.locator("body").inner_text()) or "").strip()
 
-        if not texto_pagina:
+        if not texto_pagina and not dados_estruturados.get("lance") and not dados_estruturados.get("avaliacao"):
             return item
 
         linhas_pag = [ln.strip() for ln in texto_pagina.splitlines() if len(ln.strip()) >= 4]
@@ -783,10 +920,23 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
             padrao_cidade=cidade_atual if cidade_atual and cidade_atual != "Não informada" else "Não informada",
             padrao_uf=uf_atual if uf_atual and uf_atual != "XX" else "XX",
         )
+        if (not cidade_real or cidade_real == "Não informada") and dados_estruturados.get("cidade"):
+            cidade_real = dados_estruturados["cidade"]
+        if (not uf_real or uf_real == "XX") and dados_estruturados.get("uf"):
+            uf_real = dados_estruturados["uf"]
         item["cidade"] = cidade_real
         item["uf"] = uf_real
 
         lance_real, avaliacao_real, tem_valor_real = _extrair_valores_com_rotulo(texto_pagina)
+        if not tem_valor_real and (
+            dados_estruturados.get("lance") is not None or dados_estruturados.get("avaliacao") is not None
+        ):
+            lance_real, avaliacao_real, tem_valor_real = _garantir_valores_coerentes(
+                dados_estruturados.get("lance"),
+                dados_estruturados.get("avaliacao"),
+                f"{item.get('titulo_lote', '')} {texto_pagina[:1200]}",
+            )
+
         if tem_valor_real:
             item["lance_atual"] = lance_real
             item["valor_mercado_referencia"] = avaliacao_real
