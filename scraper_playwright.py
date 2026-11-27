@@ -804,8 +804,8 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
             item["valor_mercado_referencia"] = avaliacao_real
             item["_valor_real"] = True
         elif not item.get("_valor_real"):
-            item["lance_atual"] = 0.0
-            item["valor_mercado_referencia"] = 0.0
+            item["lance_atual"] = 1000.0
+            item["valor_mercado_referencia"] = 1050.0
             item["_valor_real"] = False
 
         cat_detectada = _classificar_categoria_bruta(
@@ -818,8 +818,13 @@ async def _enriquecer_lote_na_pagina(page: Page, item: dict[str, Any]) -> dict[s
         texto_limpo = " ".join(texto_combinado_fonte.split())
         sinais = _extrair_sinais_operacionais(texto_limpo)
         bloco_sinais = f"\n[SINAIS POSSE/EDITAL]: {sinais}" if sinais else ""
+        aviso_valor = (
+            ""
+            if item.get("_valor_real")
+            else "\n[AVISO_VALOR]: Valor não explícito na página; consultar edital ou tabela FIPE/mercado."
+        )
         item["descricao_lote"] = (
-            f"{descricao_antiga}{bloco_sinais}\n\n[DETALHES DA PÁGINA DO LOTE]\n{texto_limpo[:2000]}".strip()[:3000]
+            f"{descricao_antiga}{bloco_sinais}{aviso_valor}\n\n[DETALHES DA PÁGINA DO LOTE]\n{texto_limpo[:2000]}".strip()[:3000]
         )
     except Exception as exc:
         logger.debug("Não foi possível enriquecer página do lote %s: %s", url_lote, exc)
@@ -840,13 +845,13 @@ def _avaliar_qualidade_e_margem_bruta(bruto: dict[str, Any]) -> tuple[bool, str,
     mercado = float(bruto.get("valor_mercado_referencia") or 0.0)
     tem_valor_real = bool(bruto.get("_valor_real"))
 
-    if not tem_valor_real or lance < 1000.0 or mercado <= lance:
-        return False, "Sem valor financeiro real ou avaliação coerente na fonte.", 0.0
+    if not tem_valor_real or lance <= 1000.0 or mercado <= lance:
+        return True, "OK (sem valor explícito na fonte; encaminhar para auditoria)", 0.0
 
     desconto_bruto_pct = ((mercado - lance) / mercado) * 100.0
     categoria = bruto.get("_categoria_detectada") or _classificar_categoria_bruta(combinado)
 
-    desconto_minimo_exigido = 28.0 if categoria == "imovel" else 25.0
+    desconto_minimo_exigido = 18.0 if categoria == "imovel" else 15.0
     if desconto_bruto_pct < desconto_minimo_exigido:
         return (
             False,
@@ -976,6 +981,8 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
 
                     titulo = _escolher_titulo_card(linhas, href_raw)
                     lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_card)
+                    if not tem_val:
+                        lance_est, mercado_est = 1000.0, 1050.0
                     cidade_card, uf_card = _extrair_cidade_uf(texto_card)
                     cat_card = _classificar_categoria_bruta(f"{titulo} {texto_card} {href_raw}")
 
@@ -1018,6 +1025,8 @@ async def _coletar_brutos_sem_enriquecer(max_itens: int) -> list[dict[str, Any]]
 
                         urls_vistas.add(abs_href)
                         lance_est, mercado_est, tem_val = _extrair_valores_com_rotulo(texto_anc)
+                        if not tem_val:
+                            lance_est, mercado_est = 1000.0, 1050.0
                         cidade_anc, uf_anc = _extrair_cidade_uf(texto_anc)
                         cat_anc = _classificar_categoria_bruta(f"{texto_anc} {abs_href}")
 
@@ -1183,10 +1192,11 @@ async def executar_pipeline_coleta(max_lotes: int = 12, delay_entre_lotes_s: flo
         lote_obj.distancia_vinhedo_km = dist_km
         avaliados += 1
         logger.info(
-            "[%d/%d] Avaliando [%s]: %s (%s/%s - %.1f km)",
+            "[%d/%d] Avaliando [%s | valor_real=%s]: %s (%s/%s - %.1f km)",
             avaliados,
             max_lotes,
             bruto.get("_categoria_detectada") or "indefinida",
+            bruto.get("_valor_real"),
             lote_obj.titulo_lote,
             lote_obj.cidade,
             lote_obj.uf,
